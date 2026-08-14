@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "阅迹可追溯阅读工作台"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "阅读 PDF、整理证据与复习资料"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "阅迹"
+    }
+  ]
+}

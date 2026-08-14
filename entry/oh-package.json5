@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "阅迹 HarmonyOS PC 应用入口模块",
+  "main": "",
+  "author": "huihui",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="32" y="32" width="960" height="960" rx="218" fill="#147D73"/>
+  <path d="M188 247C188 216 213 192 244 192H433C468 192 496 220 496 255V744C477 721 449 708 419 708H244C213 708 188 683 188 652V247Z" fill="#F8FCFA"/>
+  <path d="M528 255C528 220 556 192 591 192H780C811 192 836 216 836 247V652C836 683 811 708 780 708H605C575 708 547 721 528 744V255Z" fill="#F8FCFA"/>
+  <path d="M496 255C496 220 468 192 433 192H244" fill="none" stroke="#DDEDEA" stroke-width="20" stroke-linecap="round"/>
+  <path d="M528 255C528 220 556 192 591 192H780" fill="none" stroke="#DDEDEA" stroke-width="20" stroke-linecap="round"/>
+  <rect x="244" y="336" width="196" height="30" rx="15" fill="#FFD95A"/>
+  <rect x="244" y="399" width="154" height="24" rx="12" fill="#B9C7C2"/>
+  <rect x="584" y="336" width="196" height="30" rx="15" fill="#FFD95A"/>
+  <rect x="584" y="399" width="136" height="24" rx="12" fill="#B9C7C2"/>
+  <path d="M610 553C610 488 663 436 728 436C793 436 846 488 846 553C846 641 728 763 728 763C728 763 610 641 610 553Z" fill="#FF725E"/>
+  <circle cx="728" cy="553" r="42" fill="#F8FCFA"/>
+  <path d="M728 532V576M706 554H750" stroke="#147D73" stroke-width="18" stroke-linecap="round"/>
+</svg>
