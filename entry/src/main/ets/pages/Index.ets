@@ -38,7 +38,8 @@ type EditorDraftAction =
   'IMPORT_PDF' |
   'IMPORT_DROPPED_PDF' |
   'DELETE_DOCUMENT' |
-  'RETURN_TO_EVIDENCE';
+  'RETURN_TO_EVIDENCE' |
+  'START_REVIEW_SESSION';
 type EvidenceDraftAction =
   'NONE' |
   'OPEN_DOCUMENT' |
@@ -117,6 +118,11 @@ struct Index {
   @State private evidenceDraftAction: EvidenceDraftAction = 'NONE';
   @State private evidenceDraftTargetId: string = '';
   @State private evidenceDraftUri: string = '';
+  @State private reviewSessionIds: string[] = [];
+  @State private reviewSessionIndex: number = 0;
+  @State private reviewSessionReviewedCount: number = 0;
+  @State private reviewSessionMasteredCount: number = 0;
+  @State private isReviewSessionUpdating: boolean = false;
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
@@ -423,6 +429,9 @@ struct Index {
         await this.returnToEvidence(card);
         return;
       }
+    } else if (action === 'START_REVIEW_SESSION') {
+      this.startReviewSession();
+      return;
     } else if (action === 'CLOSE') {
       this.statusMessage = '已放弃未保存的修改';
       return;
@@ -1115,23 +1124,147 @@ struct Index {
     });
   }
 
-  private filteredReviewCards(): EvidenceCard[] {
+  private matchesReviewQuery(card: EvidenceCard): boolean {
     const keyword = this.reviewSearch.trim().toLowerCase();
+    if (this.reviewSelectedTag.length > 0 && !tagList(card.tags).includes(this.reviewSelectedTag)) {
+      return false;
+    }
+    if (keyword.length === 0) {
+      return true;
+    }
+    return card.quote.toLowerCase().includes(keyword) ||
+      card.note.toLowerCase().includes(keyword) ||
+      card.tags.toLowerCase().includes(keyword) ||
+      this.documentTitle(card.documentId).toLowerCase().includes(keyword);
+  }
+
+  private filteredReviewCards(): EvidenceCard[] {
     return this.evidenceCards.filter((card: EvidenceCard): boolean => {
       if (this.reviewFilter !== 'ALL' && card.reviewStatus !== this.reviewFilter) {
         return false;
       }
-      if (this.reviewSelectedTag.length > 0 && !tagList(card.tags).includes(this.reviewSelectedTag)) {
-        return false;
-      }
-      if (keyword.length === 0) {
-        return true;
-      }
-      return card.quote.toLowerCase().includes(keyword) ||
-        card.note.toLowerCase().includes(keyword) ||
-        card.tags.toLowerCase().includes(keyword) ||
-        this.documentTitle(card.documentId).toLowerCase().includes(keyword);
+      return this.matchesReviewQuery(card);
     });
+  }
+
+  private reviewQueueCards(): EvidenceCard[] {
+    return this.evidenceCards
+      .filter((card: EvidenceCard): boolean =>
+        card.reviewStatus === 'TO_REVIEW' && this.matchesReviewQuery(card))
+      .sort((left: EvidenceCard, right: EvidenceCard): number => {
+        const updatedDifference = left.updatedAt - right.updatedAt;
+        return updatedDifference !== 0 ? updatedDifference : left.createdAt - right.createdAt;
+      });
+  }
+
+  private reviewSessionCard(): EvidenceCard | undefined {
+    if (this.reviewSessionIndex < 0 || this.reviewSessionIndex >= this.reviewSessionIds.length) {
+      return undefined;
+    }
+    const id = this.reviewSessionIds[this.reviewSessionIndex];
+    return this.evidenceCards.find((card: EvidenceCard): boolean => card.id === id);
+  }
+
+  private startReviewSession(): void {
+    const cards = this.reviewQueueCards();
+    if (cards.length === 0) {
+      this.statusMessage = '当前搜索和标签范围内没有待复习证据';
+      return;
+    }
+    this.reviewSessionIds = cards.map((card: EvidenceCard): string => card.id);
+    this.reviewSessionIndex = 0;
+    this.reviewSessionReviewedCount = 0;
+    this.reviewSessionMasteredCount = 0;
+    this.isReviewSessionUpdating = false;
+    this.statusMessage = `已开始专注复习，共 ${cards.length} 张证据卡`;
+  }
+
+  private requestStartReviewSession(): void {
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'START_REVIEW_SESSION')) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
+    this.startReviewSession();
+  }
+
+  private resetReviewSession(): void {
+    this.reviewSessionIds = [];
+    this.reviewSessionIndex = 0;
+    this.reviewSessionReviewedCount = 0;
+    this.reviewSessionMasteredCount = 0;
+    this.isReviewSessionUpdating = false;
+  }
+
+  private finishReviewSession(message: string): void {
+    const reviewedCount = this.reviewSessionReviewedCount;
+    const masteredCount = this.reviewSessionMasteredCount;
+    this.resetReviewSession();
+    this.statusMessage = `${message}：处理 ${reviewedCount} 张，掌握 ${masteredCount} 张`;
+  }
+
+  private closeReviewSession(): void {
+    if (this.isReviewSessionUpdating) {
+      return;
+    }
+    this.finishReviewSession('已结束专注复习');
+  }
+
+  private advanceReviewSession(): void {
+    if (this.reviewSessionIndex + 1 >= this.reviewSessionIds.length) {
+      this.finishReviewSession('本轮复习完成');
+      return;
+    }
+    this.reviewSessionIndex += 1;
+    this.statusMessage =
+      `专注复习 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length}`;
+  }
+
+  private skipReviewSessionCard(): void {
+    if (this.isReviewSessionUpdating) {
+      return;
+    }
+    this.advanceReviewSession();
+  }
+
+  private async setReviewSessionStatus(status: ReviewStatus): Promise<void> {
+    if (this.isReviewSessionUpdating) {
+      return;
+    }
+    const card = this.reviewSessionCard();
+    if (card === undefined) {
+      this.finishReviewSession('复习队列已结束');
+      return;
+    }
+    this.isReviewSessionUpdating = true;
+    this.statusMessage = status === 'MASTERED' ? '正在标记掌握…' : '正在保留待复习状态…';
+    try {
+      await this.evidenceRepository.setReviewStatus(card.id, status);
+      this.evidenceCards = await this.evidenceRepository.listAll();
+      this.reviewSessionReviewedCount += 1;
+      if (status === 'MASTERED') {
+        this.reviewSessionMasteredCount += 1;
+      }
+      this.advanceReviewSession();
+    } catch (error) {
+      this.statusMessage = '复习状态保存失败，当前卡片仍保留';
+    } finally {
+      this.isReviewSessionUpdating = false;
+    }
+  }
+
+  private async returnToReviewSessionSource(): Promise<void> {
+    if (this.isReviewSessionUpdating) {
+      return;
+    }
+    const card = this.reviewSessionCard();
+    if (card === undefined) {
+      this.finishReviewSession('复习队列已结束');
+      return;
+    }
+    this.resetReviewSession();
+    await this.returnToEvidence(card);
   }
 
   private hasLibraryFilters(): boolean {
@@ -1706,6 +1839,10 @@ struct Index {
     const modifier = controlPressed || event.metaKey === 1;
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+        if (this.reviewSessionIds.length > 0) {
+          this.closeReviewSession();
+          return true;
+        }
         if (this.editorDraftAction !== 'NONE') {
           this.cancelEditorDraftDiscard();
           return true;
@@ -1737,7 +1874,8 @@ struct Index {
       }
       return false;
     }
-    if (this.editorDraftAction !== 'NONE' ||
+    if (this.reviewSessionIds.length > 0 ||
+      this.editorDraftAction !== 'NONE' ||
       this.evidenceDraftAction !== 'NONE' ||
       this.deleteTargetKind !== 'NONE' ||
       this.showWebEditor ||
@@ -2891,6 +3029,16 @@ struct Index {
           this.ReviewFilterButton('全部', 'ALL');
           this.ReviewFilterButton('待复习', 'TO_REVIEW');
           this.ReviewFilterButton('已掌握', 'MASTERED');
+          Blank();
+          this.AccentButton(
+            (): string => this.windowWidth < 900 ?
+              `复习 ${this.reviewQueueCards().length}` :
+              `开始复习 ${this.reviewQueueCards().length} 张`,
+            (): void => {
+              this.requestStartReviewSession();
+            },
+            (): boolean => this.reviewQueueCards().length > 0
+          );
         }
         .width('100%');
         Scroll() {
@@ -2949,6 +3097,142 @@ struct Index {
     .layoutWeight(1)
     .height('100%')
     .backgroundColor(this.pageBackground());
+  }
+
+  @Builder
+  private ReviewSessionCard(card: EvidenceCard): void {
+    Column({ space: 14 }) {
+      Row({ space: 10 }) {
+        Column({ space: 3 }) {
+          Text('专注复习')
+            .fontSize(20)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryText())
+            .width('100%');
+          Text(`第 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length} 张 · ${
+            this.reviewSessionReviewedCount
+          } 张已处理`)
+            .fontSize(11)
+            .fontColor(this.secondaryText())
+            .width('100%');
+        }
+        .layoutWeight(1);
+        this.ToolButton((): string => '结束复习', (): void => {
+          this.closeReviewSession();
+        }, (): boolean => !this.isReviewSessionUpdating);
+      }
+      .width('100%');
+      Progress({
+        value: this.reviewSessionIndex + 1,
+        total: this.reviewSessionIds.length,
+        type: ProgressType.Linear
+      })
+        .width('100%')
+        .height(5)
+        .color(this.accentColor())
+        .backgroundColor(this.dividerColor())
+        .borderRadius(3);
+      Row({ space: 7 }) {
+        Text(this.evidenceKindLabel(card.kind))
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+          .borderRadius(4)
+          .backgroundColor(this.accentSoft());
+        Text(this.evidenceSourceLabel(card))
+          .fontSize(11)
+          .fontColor(this.mutedText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1);
+      }
+      .width('100%');
+      Scroll() {
+        Column({ space: 14 }) {
+          Text(card.quote)
+            .fontSize(18)
+            .fontColor(this.primaryText())
+            .lineHeight(29)
+            .width('100%')
+            .padding({ left: 14 })
+            .border({ width: { left: 4 }, color: card.color });
+          Column({ space: 6 }) {
+            Text('我的笔记')
+              .fontSize(11)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.mutedText())
+              .width('100%');
+            Text(card.note.length > 0 ? card.note : '这张证据还没有补充个人笔记。')
+              .fontSize(13)
+              .fontColor(card.note.length > 0 ? this.secondaryText() : this.mutedText())
+              .lineHeight(21)
+              .width('100%');
+          }
+          .width('100%')
+          .padding(12)
+          .borderRadius(6)
+          .backgroundColor(this.raisedBackground())
+          .border({ width: 1, color: this.dividerColor() });
+          if (card.tags.length > 0) {
+            Text(tagList(card.tags).map((tag: string): string => `#${tag}`).join('  '))
+              .fontSize(11)
+              .fontColor(this.accentColor())
+              .width('100%');
+          }
+        }
+        .width('100%');
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Auto);
+      Row({ space: 8 }) {
+        this.ToolButton((): string => '回到原文', (): void => {
+          this.returnToReviewSessionSource();
+        }, (): boolean => !this.isReviewSessionUpdating &&
+          this.documentById(card.documentId) !== undefined);
+        this.ToolButton((): string => '跳过', (): void => {
+          this.skipReviewSessionCard();
+        }, (): boolean => !this.isReviewSessionUpdating);
+        Blank();
+        this.ToolButton(
+          (): string => this.isReviewSessionUpdating ? '正在保存…' : '仍需复习',
+          (): void => {
+            this.setReviewSessionStatus('TO_REVIEW');
+          },
+          (): boolean => !this.isReviewSessionUpdating
+        );
+        this.AccentButton(
+          (): string => this.isReviewSessionUpdating ? '正在保存…' : '已掌握',
+          (): void => {
+            this.setReviewSessionStatus('MASTERED');
+          },
+          (): boolean => !this.isReviewSessionUpdating
+        );
+      }
+      .width('100%');
+    }
+    .width(this.compactEditorWidth(720))
+    .height(this.compactEditorHeight(620))
+    .padding(22)
+    .borderRadius(8)
+    .backgroundColor(this.panelBackground())
+    .border({ width: 1, color: this.dividerColor() });
+  }
+
+  @Builder
+  private ReviewSessionOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor());
+      if (this.reviewSessionCard() !== undefined) {
+        this.ReviewSessionCard(this.reviewSessionCard()!);
+      }
+    }
+    .width('100%')
+    .height('100%');
   }
 
   @Builder
@@ -3447,6 +3731,9 @@ struct Index {
       }
       if (this.showPdfEditor) {
         this.PdfEditorOverlay();
+      }
+      if (this.reviewSessionIds.length > 0) {
+        this.ReviewSessionOverlay();
       }
       if (this.editorDraftAction !== 'NONE') {
         this.EditorDraftDiscardOverlay();
