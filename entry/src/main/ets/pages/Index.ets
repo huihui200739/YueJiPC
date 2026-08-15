@@ -1954,10 +1954,43 @@ struct Index {
     }
   }
 
-  private handleShortcut(event: KeyEvent): boolean {
-    if (event.type !== KeyType.Down) {
-      return false;
+  private saveActiveEditingContext(): boolean {
+    if (this.showWebEditor) {
+      if (!this.isSavingEditor) {
+        this.saveWebDocument();
+      }
+      return true;
     }
+    if (this.showPdfEditor) {
+      if (!this.isSavingEditor) {
+        this.savePdfDocument();
+      }
+      return true;
+    }
+    if (this.editingEvidenceId.length > 0) {
+      if (this.isSavingEditor) {
+        return true;
+      }
+      const card = this.evidenceCards.find(
+        (item: EvidenceCard): boolean => item.id === this.editingEvidenceId
+      );
+      if (card === undefined) {
+        this.statusMessage = '当前证据卡已不存在，无法保存修改';
+        return true;
+      }
+      this.saveEvidenceEdit(card);
+      return true;
+    }
+    if (this.hasEvidenceDraft()) {
+      if (!this.isSavingEvidence) {
+        this.createEvidenceCard();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private shortcutModifierPressed(event: KeyEvent): boolean {
     let controlPressed = false;
     if (event.getModifierKeyState !== undefined) {
       try {
@@ -1965,7 +1998,33 @@ struct Index {
       } catch (error) {
       }
     }
-    const modifier = controlPressed || event.metaKey === 1;
+    return controlPressed || event.metaKey === 1;
+  }
+
+  private handleEditingShortcut(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down || !this.shortcutModifierPressed(event)) {
+      return false;
+    }
+    const submitShortcut = event.keyCode === KeyCode.KEYCODE_S ||
+      event.keyCode === KeyCode.KEYCODE_ENTER ||
+      event.keyCode === KeyCode.KEYCODE_NUMPAD_ENTER;
+    if (!submitShortcut) {
+      return false;
+    }
+    if (this.reviewSessionIds.length > 0 ||
+      this.editorDraftAction !== 'NONE' ||
+      this.evidenceDraftAction !== 'NONE' ||
+      this.deleteTargetKind !== 'NONE') {
+      return true;
+    }
+    return this.saveActiveEditingContext();
+  }
+
+  private handleShortcut(event: KeyEvent): boolean {
+    if (event.type !== KeyType.Down) {
+      return false;
+    }
+    const modifier = this.shortcutModifierPressed(event);
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
         if (this.reviewSessionIds.length > 0) {
@@ -2017,8 +2076,13 @@ struct Index {
     }
     if (this.editorDraftAction !== 'NONE' ||
       this.evidenceDraftAction !== 'NONE' ||
-      this.deleteTargetKind !== 'NONE' ||
-      this.showWebEditor ||
+      this.deleteTargetKind !== 'NONE') {
+      return true;
+    }
+    if (this.handleEditingShortcut(event)) {
+      return true;
+    }
+    if (this.showWebEditor ||
       this.showPdfEditor ||
       this.editingEvidenceId.length > 0) {
       return true;
@@ -2969,7 +3033,8 @@ struct Index {
           .borderRadius(6)
           .onChange((value: string): void => {
             this.evidenceNote = value;
-          });
+          })
+          .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         TextInput({ placeholder: '标签，使用逗号分隔', text: this.evidenceTags })
           .width('100%')
           .height(34)
@@ -2981,7 +3046,8 @@ struct Index {
           .borderRadius(6)
           .onChange((value: string): void => {
             this.evidenceTags = value;
-          });
+          })
+          .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         Row({ space: 8 }) {
           this.ToolButton((): string => '取消选区', (): void => {
             this.cancelEvidenceDraft();
@@ -3060,7 +3126,8 @@ struct Index {
           .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.editingEvidenceNote = value;
-          });
+          })
+          .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         TextInput({ placeholder: '标签，使用逗号分隔', text: this.editingEvidenceTags })
           .width('100%')
           .height(32)
@@ -3072,7 +3139,8 @@ struct Index {
           .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.editingEvidenceTags = value;
-          });
+          })
+          .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         Row({ space: 7 }) {
           this.AccentButton(
             (): string => this.isSavingEditor ? '正在保存…' : '保存',
@@ -3473,7 +3541,8 @@ struct Index {
               .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webTitle = value;
-              });
+              })
+              .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
             TextInput({ placeholder: 'https://example.com/article', text: this.webUrl })
               .width('100%')
               .height(38)
@@ -3485,7 +3554,8 @@ struct Index {
               .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webUrl = value;
-              });
+              })
+              .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
             TextArea({ placeholder: '粘贴需要保留的原文摘录', text: this.webExcerpt })
               .width('100%')
               .height(120)
@@ -3497,7 +3567,8 @@ struct Index {
               .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webExcerpt = value;
-              });
+              })
+              .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
             TextArea({ placeholder: '个人笔记', text: this.webNote })
               .width('100%')
               .height(90)
@@ -3509,7 +3580,8 @@ struct Index {
               .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webNote = value;
-              });
+              })
+              .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
             TextInput({ placeholder: '标签，使用逗号分隔', text: this.webTags })
               .width('100%')
               .height(38)
@@ -3521,7 +3593,8 @@ struct Index {
               .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webTags = value;
-              });
+              })
+              .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
           }
           .width('100%');
         }
@@ -3595,7 +3668,8 @@ struct Index {
           .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.pdfTitle = value;
-          });
+          })
+          .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         TextInput({ placeholder: '标签，使用逗号分隔', text: this.pdfTags })
           .width('100%')
           .height(38)
@@ -3607,7 +3681,8 @@ struct Index {
           .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.pdfTags = value;
-          });
+          })
+          .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         Row({ space: 9 }) {
           Blank();
           this.ToolButton((): string => '取消', (): void => {
