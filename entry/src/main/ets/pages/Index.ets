@@ -46,7 +46,8 @@ type EvidenceDraftAction =
   'IMPORT_PDF' |
   'IMPORT_DROPPED_PDF' |
   'DELETE_DOCUMENT' |
-  'RETURN_TO_EVIDENCE';
+  'RETURN_TO_EVIDENCE' |
+  'START_REVIEW_SESSION';
 
 interface ThumbnailRecord {
   pageIndex: number;
@@ -123,11 +124,13 @@ struct Index {
   @State private reviewSessionReviewedCount: number = 0;
   @State private reviewSessionMasteredCount: number = 0;
   @State private isReviewSessionUpdating: boolean = false;
+  @State private reviewSessionSourceOpen: boolean = false;
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
   private searchGeneration: number = 0;
   private thumbnailGeneration: number = 0;
+  private reviewSessionSourceRightSidebarOpen: boolean = true;
   private database: YueJiDatabase = new YueJiDatabase();
   private libraryRepository: LibraryRepository = new LibraryRepository(this.database);
   private evidenceRepository: EvidenceRepository = new EvidenceRepository(this.database);
@@ -266,6 +269,9 @@ struct Index {
         await this.returnToEvidence(card);
         return;
       }
+    } else if (action === 'START_REVIEW_SESSION') {
+      this.startReviewSession();
+      return;
     }
     this.statusMessage = '目标内容已不存在，证据卡草稿已放弃';
   }
@@ -430,7 +436,7 @@ struct Index {
         return;
       }
     } else if (action === 'START_REVIEW_SESSION') {
-      this.startReviewSession();
+      this.requestStartReviewSession();
       return;
     } else if (action === 'CLOSE') {
       this.statusMessage = '已放弃未保存的修改';
@@ -1176,6 +1182,7 @@ struct Index {
     this.reviewSessionReviewedCount = 0;
     this.reviewSessionMasteredCount = 0;
     this.isReviewSessionUpdating = false;
+    this.reviewSessionSourceOpen = false;
     this.statusMessage = `已开始专注复习，共 ${cards.length} 张证据卡`;
   }
 
@@ -1186,15 +1193,22 @@ struct Index {
       }
       this.closeEditor('EVIDENCE');
     }
+    if (this.requestEvidenceDraftDiscard('START_REVIEW_SESSION')) {
+      return;
+    }
     this.startReviewSession();
   }
 
   private resetReviewSession(): void {
+    if (this.reviewSessionSourceOpen) {
+      this.rightSidebarOpen = this.reviewSessionSourceRightSidebarOpen;
+    }
     this.reviewSessionIds = [];
     this.reviewSessionIndex = 0;
     this.reviewSessionReviewedCount = 0;
     this.reviewSessionMasteredCount = 0;
     this.isReviewSessionUpdating = false;
+    this.reviewSessionSourceOpen = false;
   }
 
   private finishReviewSession(message: string): void {
@@ -1263,8 +1277,39 @@ struct Index {
       this.finishReviewSession('复习队列已结束');
       return;
     }
-    this.resetReviewSession();
+    const document = this.documentById(card.documentId);
+    if (document === undefined || document.kind !== 'PDF') {
+      this.statusMessage = '当前证据的 PDF 来源已不可用';
+      return;
+    }
+    const previousRightSidebarOpen = this.rightSidebarOpen;
     await this.returnToEvidence(card);
+    if (this.mainView !== 'READER' ||
+      this.activeDocumentId !== document.id ||
+      this.documentPath.length === 0) {
+      return;
+    }
+    this.reviewSessionSourceRightSidebarOpen = previousRightSidebarOpen;
+    this.rightSidebarOpen = false;
+    this.reviewSessionSourceOpen = true;
+    this.statusMessage =
+      `正在核对第 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length} 张证据的原文`;
+  }
+
+  private resumeReviewSession(): void {
+    if (this.isReviewSessionUpdating) {
+      return;
+    }
+    const card = this.reviewSessionCard();
+    if (card === undefined) {
+      this.finishReviewSession('复习队列已结束');
+      return;
+    }
+    this.reviewSessionSourceOpen = false;
+    this.rightSidebarOpen = this.reviewSessionSourceRightSidebarOpen;
+    this.mainView = 'REVIEW';
+    this.statusMessage =
+      `已返回专注复习，第 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length} 张`;
   }
 
   private hasLibraryFilters(): boolean {
@@ -1840,7 +1885,11 @@ struct Index {
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
         if (this.reviewSessionIds.length > 0) {
-          this.closeReviewSession();
+          if (this.reviewSessionSourceOpen) {
+            this.resumeReviewSession();
+          } else {
+            this.closeReviewSession();
+          }
           return true;
         }
         if (this.editorDraftAction !== 'NONE') {
@@ -1874,8 +1923,15 @@ struct Index {
       }
       return false;
     }
-    if (this.reviewSessionIds.length > 0 ||
-      this.editorDraftAction !== 'NONE' ||
+    if (this.reviewSessionIds.length > 0) {
+      if (this.reviewSessionSourceOpen &&
+        this.mainView === 'READER' &&
+        event.keyCode === KeyCode.KEYCODE_F) {
+        focusControl.requestFocus('pdfSearch');
+      }
+      return true;
+    }
+    if (this.editorDraftAction !== 'NONE' ||
       this.evidenceDraftAction !== 'NONE' ||
       this.deleteTargetKind !== 'NONE' ||
       this.showWebEditor ||
@@ -1978,20 +2034,22 @@ struct Index {
   }
 
   @Builder
-  private NavButton(label: string, selected: () => boolean, action: () => void): void {
+  private NavButton(label: string, selected: () => boolean, action: () => void,
+    enabled: () => boolean = (): boolean => true): void {
     Button() {
       Text(label)
         .width('100%')
         .fontSize(14)
         .fontWeight(selected() ? FontWeight.Medium : FontWeight.Regular)
-        .fontColor(selected() ? this.accentColor() : this.secondaryText())
+        .fontColor(enabled() ? (selected() ? this.accentColor() : this.secondaryText()) : this.mutedText())
         .textAlign(TextAlign.Start);
     }
       .width('100%')
       .height(38)
-      .backgroundColor(selected() ? this.accentSoft() : Color.Transparent)
+      .backgroundColor(enabled() && selected() ? this.accentSoft() : Color.Transparent)
       .borderRadius(6)
       .padding({ left: 12 })
+      .enabled(enabled())
       .onClick(action);
   }
 
@@ -2062,7 +2120,8 @@ struct Index {
           }
           this.focusMode = false;
           this.saveSettings();
-        }
+        },
+        (): boolean => !this.reviewSessionSourceOpen
       );
       Text('阅迹')
         .fontSize(21)
@@ -2089,7 +2148,7 @@ struct Index {
         if (this.windowWidth >= 1100) {
           this.ToolButton((): string => this.focusMode ? '退出专注' : '专注', (): void => {
             this.toggleFocusMode();
-          }, (): boolean => this.documentPath.length > 0);
+          }, (): boolean => this.documentPath.length > 0 && !this.reviewSessionSourceOpen);
         }
         this.ToolButton((): string => this.windowWidth < 760 ?
           (this.rightSidebarOpen && !this.focusMode ? '收起' : '证据') :
@@ -2101,24 +2160,24 @@ struct Index {
           }
           this.focusMode = false;
           this.saveSettings();
-        }, (): boolean => this.documentPath.length > 0);
+        }, (): boolean => this.documentPath.length > 0 && !this.reviewSessionSourceOpen);
       }
       if (this.windowWidth >= 900) {
         this.ToolButton((): string => '导出', (): void => {
           this.exportCurrentView();
-        }, (): boolean => this.documents.length > 0);
+        }, (): boolean => this.documents.length > 0 && !this.reviewSessionSourceOpen);
       }
       if (this.windowWidth >= 760) {
         this.ToolButton((): string => this.windowWidth < 1100 ? '网页' : '网页资料', (): void => {
           this.startAddWeb();
-        }, (): boolean => this.isReady);
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen);
       }
       this.AccentButton(
         (): string => this.isLoading ? '处理中…' : (this.windowWidth < 1100 ? '导入' : '导入 PDF'),
         (): void => {
         this.importPdf();
         },
-        (): boolean => this.isReady && !this.isLoading
+        (): boolean => this.isReady && !this.isLoading && !this.reviewSessionSourceOpen
       );
     }
     .width('100%')
@@ -2126,6 +2185,74 @@ struct Index {
     .padding({ left: 16, right: 16 })
     .backgroundColor(this.panelBackground())
     .border({ width: { bottom: 1 }, color: this.dividerColor() });
+  }
+
+  @Builder
+  private ReviewSourceBar(card: EvidenceCard): void {
+    if (this.windowWidth < 760) {
+      Column({ space: 7 }) {
+        Row({ space: 8 }) {
+          Text('正在核对来源')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.accentColor());
+          Text(`第 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length} 张 · ${
+            this.evidenceSourceLabel(card)
+          }`)
+            .fontSize(11)
+            .fontColor(this.secondaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1);
+        }
+        .width('100%');
+        Row({ space: 8 }) {
+          this.ToolButton((): string => '结束本轮', (): void => {
+            this.closeReviewSession();
+          });
+          Blank();
+          this.AccentButton((): string => '返回复习', (): void => {
+            this.resumeReviewSession();
+          });
+        }
+        .width('100%');
+      }
+      .width('100%')
+      .height(88)
+      .padding({ left: 14, right: 14, top: 9, bottom: 9 })
+      .backgroundColor(this.accentSoft())
+      .border({ width: { bottom: 1 }, color: this.accentColor() });
+    } else {
+      Row({ space: 12 }) {
+        Column({ space: 2 }) {
+          Text('正在核对来源')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.accentColor())
+            .width('100%');
+          Text(`第 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length} 张 · ${
+            this.evidenceSourceLabel(card)
+          }`)
+            .fontSize(11)
+            .fontColor(this.secondaryText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%');
+        }
+        .layoutWeight(1);
+        this.ToolButton((): string => '结束本轮', (): void => {
+          this.closeReviewSession();
+        });
+        this.AccentButton((): string => '返回复习', (): void => {
+          this.resumeReviewSession();
+        });
+      }
+      .width('100%')
+      .height(54)
+      .padding({ left: 16, right: 16 })
+      .backgroundColor(this.accentSoft())
+      .border({ width: { bottom: 1 }, color: this.accentColor() });
+    }
   }
 
   @Builder
@@ -2200,23 +2327,23 @@ struct Index {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'ALL';
         this.closeCompactNavigation();
-      });
+      }, (): boolean => !this.reviewSessionSourceOpen);
       this.NavButton('最近阅读', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'RECENT', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'RECENT';
         this.closeCompactNavigation();
-      });
+      }, (): boolean => !this.reviewSessionSourceOpen);
       this.NavButton('收藏', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'FAVORITE', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'FAVORITE';
         this.closeCompactNavigation();
-      });
+      }, (): boolean => !this.reviewSessionSourceOpen);
       this.NavButton('复习中心', (): boolean => this.mainView === 'REVIEW', (): void => {
         this.mainView = 'REVIEW';
         this.closeCompactNavigation();
-      });
+      }, (): boolean => !this.reviewSessionSourceOpen);
       if (this.windowWidth < 760) {
         Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
         Text('添加资料')
@@ -2226,7 +2353,7 @@ struct Index {
         this.NavButton('网页资料', (): boolean => false, (): void => {
           this.closeCompactNavigation();
           this.startAddWeb();
-        });
+        }, (): boolean => !this.reviewSessionSourceOpen);
       }
       Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
       if (this.mainView === 'READER' && this.documentPath.length > 0) {
@@ -3629,6 +3756,9 @@ struct Index {
     Stack() {
       Column() {
         this.AppHeader();
+        if (this.reviewSessionSourceOpen && this.reviewSessionCard() !== undefined) {
+          this.ReviewSourceBar(this.reviewSessionCard()!);
+        }
         Stack({ alignContent: Alignment.TopStart }) {
           Row() {
             if (this.windowWidth >= 1100 && !this.focusMode && this.leftSidebarOpen) {
@@ -3732,7 +3862,7 @@ struct Index {
       if (this.showPdfEditor) {
         this.PdfEditorOverlay();
       }
-      if (this.reviewSessionIds.length > 0) {
+      if (this.reviewSessionIds.length > 0 && !this.reviewSessionSourceOpen) {
         this.ReviewSessionOverlay();
       }
       if (this.editorDraftAction !== 'NONE') {
