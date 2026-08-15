@@ -233,6 +233,37 @@ struct Index {
     return true;
   }
 
+  private evidenceDraftDestinationLabel(): string {
+    if (this.evidenceDraftAction === 'OPEN_DOCUMENT') {
+      const document = this.documentById(this.evidenceDraftTargetId);
+      return document === undefined ? '打开其他资料' : `打开“${document.title}”`;
+    }
+    if (this.evidenceDraftAction === 'IMPORT_PDF' ||
+      this.evidenceDraftAction === 'IMPORT_DROPPED_PDF') {
+      return '导入新的 PDF';
+    }
+    if (this.evidenceDraftAction === 'DELETE_DOCUMENT') {
+      return '删除当前资料';
+    }
+    if (this.evidenceDraftAction === 'RETURN_TO_EVIDENCE') {
+      return '返回另一条证据的来源';
+    }
+    if (this.evidenceDraftAction === 'START_REVIEW_SESSION') {
+      return '开始专注复习';
+    }
+    if (this.evidenceDraftAction === 'SHOW_LIBRARY') {
+      return this.evidenceDraftTargetId === 'RECENT' ? '前往最近阅读' :
+        this.evidenceDraftTargetId === 'FAVORITE' ? '前往收藏' : '前往资料库';
+    }
+    if (this.evidenceDraftAction === 'SHOW_REVIEW') {
+      return '前往复习中心';
+    }
+    if (this.evidenceDraftAction === 'ADD_WEB') {
+      return '添加网页资料';
+    }
+    return '继续当前操作';
+  }
+
   private cancelEvidenceDraftDiscard(): void {
     this.evidenceDraftAction = 'NONE';
     this.evidenceDraftTargetId = '';
@@ -264,6 +295,7 @@ struct Index {
     this.evidenceDraftTargetId = '';
     this.evidenceDraftUri = '';
     this.resetEvidenceDraft();
+    this.statusMessage = '已放弃未保存的证据卡草稿';
     if (action === 'OPEN_DOCUMENT') {
       const document = this.documentById(targetId);
       if (document !== undefined) {
@@ -3748,7 +3780,7 @@ struct Index {
           .padding(10)
           .borderRadius(6)
           .backgroundColor(this.highlightPreviewBackground());
-        Text('继续当前操作会丢弃这段原文的选区、笔记和标签。')
+        Text(`${this.evidenceDraftDestinationLabel()}会丢弃这段原文的选区、笔记和标签。`)
           .fontSize(12)
           .fontColor(this.secondaryText())
           .lineHeight(19)
