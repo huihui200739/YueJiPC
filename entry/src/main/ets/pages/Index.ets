@@ -27,6 +27,7 @@ import { SettingsService } from '../services/SettingsService';
 
 type LibraryScope = 'ALL' | 'RECENT' | 'FAVORITE';
 type ReviewFilter = 'ALL' | 'TO_REVIEW' | 'MASTERED';
+type DeleteTargetKind = 'NONE' | 'DOCUMENT' | 'EVIDENCE';
 
 interface ThumbnailRecord {
   pageIndex: number;
@@ -71,6 +72,7 @@ struct Index {
   @State private leftSidebarOpen: boolean = true;
   @State private rightSidebarOpen: boolean = true;
   @State private windowWidth: number = 1440;
+  @State private windowHeight: number = 900;
   @State private showWebEditor: boolean = false;
   @State private editingWebId: string = '';
   @State private webTitle: string = '';
@@ -85,6 +87,9 @@ struct Index {
   @State private thumbnails: ThumbnailRecord[] = [];
   @State private thumbnailLoadCount: number = 0;
   @State private isDragOver: boolean = false;
+  @State private deleteTargetKind: DeleteTargetKind = 'NONE';
+  @State private deleteTargetId: string = '';
+  @State private isDeleting: boolean = false;
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
@@ -736,6 +741,29 @@ struct Index {
     });
   }
 
+  private hasLibraryFilters(): boolean {
+    return this.librarySearch.trim().length > 0 || this.selectedTag.length > 0;
+  }
+
+  private clearLibraryFilters(): void {
+    this.librarySearch = '';
+    this.selectedTag = '';
+    this.statusMessage = '已清除资料筛选';
+  }
+
+  private hasReviewFilters(): boolean {
+    return this.reviewSearch.trim().length > 0 ||
+      this.reviewSelectedTag.length > 0 ||
+      this.reviewFilter !== 'ALL';
+  }
+
+  private clearReviewFilters(): void {
+    this.reviewSearch = '';
+    this.reviewSelectedTag = '';
+    this.reviewFilter = 'ALL';
+    this.statusMessage = '已清除复习筛选';
+  }
+
   private allTags(): string[] {
     const values: string[] = [];
     this.documents.forEach((document: DocumentRecord): void => {
@@ -787,6 +815,90 @@ struct Index {
     } catch (error) {
       this.statusMessage = '资料已从列表移除，但部分本地文件可能需要稍后清理';
       await this.reloadData();
+    }
+  }
+
+  private requestDeleteDocument(document: DocumentRecord): void {
+    this.showWebEditor = false;
+    this.showPdfEditor = false;
+    this.deleteTargetKind = 'DOCUMENT';
+    this.deleteTargetId = document.id;
+  }
+
+  private requestDeleteEvidence(card: EvidenceCard): void {
+    this.editingEvidenceId = '';
+    this.deleteTargetKind = 'EVIDENCE';
+    this.deleteTargetId = card.id;
+  }
+
+  private cancelDelete(): void {
+    if (this.isDeleting) {
+      return;
+    }
+    this.deleteTargetKind = 'NONE';
+    this.deleteTargetId = '';
+  }
+
+  private pendingDeleteDocument(): DocumentRecord | undefined {
+    if (this.deleteTargetKind !== 'DOCUMENT') {
+      return undefined;
+    }
+    return this.documentById(this.deleteTargetId);
+  }
+
+  private pendingDeleteEvidence(): EvidenceCard | undefined {
+    if (this.deleteTargetKind !== 'EVIDENCE') {
+      return undefined;
+    }
+    return this.evidenceCards.find((card: EvidenceCard): boolean => card.id === this.deleteTargetId);
+  }
+
+  private deleteDialogTitle(): string {
+    return this.deleteTargetKind === 'DOCUMENT' ? '删除这份资料？' : '删除这张证据卡？';
+  }
+
+  private deleteDialogTarget(): string {
+    const document = this.pendingDeleteDocument();
+    if (document !== undefined) {
+      return document.title;
+    }
+    const card = this.pendingDeleteEvidence();
+    return card === undefined ? '目标内容已不存在' : card.quote;
+  }
+
+  private deleteDialogMessage(): string {
+    const document = this.pendingDeleteDocument();
+    if (document !== undefined) {
+      const evidenceCount = this.evidenceCountForDocument(document.id);
+      const sourceMessage = document.kind === 'PDF' ?
+        '应用沙箱中的 PDF 副本也会被移除。' :
+        '保存的网址、摘录和笔记也会被移除。';
+      return `将同时删除 ${evidenceCount} 张关联证据卡。${sourceMessage}此操作无法撤销。`;
+    }
+    return 'PDF 上对应的阅迹标注也会被移除，原始 PDF 文件不受影响。此操作无法撤销。';
+  }
+
+  private async confirmDelete(): Promise<void> {
+    if (this.isDeleting) {
+      return;
+    }
+    const document = this.pendingDeleteDocument();
+    const card = this.pendingDeleteEvidence();
+    if (document === undefined && card === undefined) {
+      this.cancelDelete();
+      this.statusMessage = '删除目标已不存在';
+      return;
+    }
+    this.isDeleting = true;
+    try {
+      if (document !== undefined) {
+        await this.deleteDocument(document);
+      } else if (card !== undefined) {
+        await this.deleteEvidence(card);
+      }
+    } finally {
+      this.isDeleting = false;
+      this.cancelDelete();
     }
   }
 
@@ -1116,6 +1228,45 @@ struct Index {
     return this.darkMode ? '#FF8D7D' : '#D95F4E';
   }
 
+  private highlightPreviewBackground(): string {
+    return this.darkMode ? '#4B4320' : '#FFF4BE';
+  }
+
+  private highlightPreviewText(): string {
+    return this.darkMode ? '#F7EFCB' : '#34413D';
+  }
+
+  private highlightActiveBackground(): string {
+    return this.darkMode ? '#625621' : '#FFE47A';
+  }
+
+  private highlightActiveBorder(): string {
+    return this.darkMode ? '#BDA94D' : '#E3C343';
+  }
+
+  private scrimColor(): string {
+    return this.darkMode ? '#88000000' : '#66000000';
+  }
+
+  private compactEditorWidth(preferredWidth: number): number {
+    return Math.min(preferredWidth, Math.max(320, this.windowWidth - 32));
+  }
+
+  private compactEditorHeight(preferredHeight: number): number {
+    return Math.min(preferredHeight, Math.max(320, this.windowHeight - 32));
+  }
+
+  private compactReaderToolbar(): boolean {
+    return this.windowWidth < 900 && this.rightSidebarOpen && !this.focusMode;
+  }
+
+  private closeCompactNavigation(): void {
+    if (this.windowWidth < 1100) {
+      this.leftSidebarOpen = false;
+      this.saveSettings();
+    }
+  }
+
   private handleShortcut(event: KeyEvent): boolean {
     if (event.type !== KeyType.Down) {
       return false;
@@ -1130,6 +1281,10 @@ struct Index {
     const modifier = controlPressed || event.metaKey === 1;
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+        if (this.deleteTargetKind !== 'NONE') {
+          this.cancelDelete();
+          return true;
+        }
         if (this.showWebEditor) {
           this.showWebEditor = false;
           return true;
@@ -1144,6 +1299,9 @@ struct Index {
         }
       }
       return false;
+    }
+    if (this.deleteTargetKind !== 'NONE' || this.showWebEditor || this.showPdfEditor) {
+      return true;
     }
     if (event.keyCode === KeyCode.KEYCODE_O) {
       this.importPdf();
@@ -1226,6 +1384,20 @@ struct Index {
   }
 
   @Builder
+  private DangerFilledButton(label: () => string, action: () => void,
+    enabled: () => boolean = (): boolean => true): void {
+    Button(label())
+      .height(36)
+      .fontSize(13)
+      .fontColor('#FFFFFF')
+      .backgroundColor(enabled() ? this.coralColor() : this.mutedText())
+      .borderRadius(6)
+      .padding({ left: 14, right: 14 })
+      .enabled(enabled())
+      .onClick(action);
+  }
+
+  @Builder
   private NavButton(label: string, selected: () => boolean, action: () => void): void {
     Button() {
       Text(label)
@@ -1299,7 +1471,9 @@ struct Index {
   private AppHeader(): void {
     Row({ space: 10 }) {
       this.ToolButton(
-        (): string => this.leftSidebarOpen && !this.focusMode ? '收起导航' : '导航',
+        (): string => this.windowWidth < 760 ?
+          (this.leftSidebarOpen && !this.focusMode ? '收起' : '导航') :
+          (this.leftSidebarOpen && !this.focusMode ? '收起导航' : '导航'),
         (): void => {
           const nextOpen = this.focusMode ? true : !this.leftSidebarOpen;
           this.leftSidebarOpen = nextOpen;
@@ -1314,27 +1488,32 @@ struct Index {
         .fontSize(21)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.primaryText());
-      Text(this.mainView === 'READER' && this.activeDocument() !== undefined ?
-        this.activeDocument()!.title :
-        this.mainView === 'REVIEW' ? '复习中心' : '本地资料库')
-        .fontSize(13)
-        .fontColor(this.secondaryText())
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1);
-      Blank();
-      if (this.windowWidth >= 1100) {
-        this.ToolButton((): string => this.darkMode ? '亮色' : '暗色', (): void => {
-          this.toggleDarkMode();
-        });
+      if (this.windowWidth >= 760) {
+        Text(this.mainView === 'READER' && this.activeDocument() !== undefined ?
+          this.activeDocument()!.title :
+          this.mainView === 'REVIEW' ? '复习中心' : '本地资料库')
+          .fontSize(13)
+          .fontColor(this.secondaryText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1);
+      } else {
+        Blank();
       }
+      this.ToolButton((): string => this.windowWidth < 1100 ?
+        (this.darkMode ? '亮' : '暗') :
+        (this.darkMode ? '亮色' : '暗色'), (): void => {
+        this.toggleDarkMode();
+      });
       if (this.mainView === 'READER') {
         if (this.windowWidth >= 1100) {
           this.ToolButton((): string => this.focusMode ? '退出专注' : '专注', (): void => {
             this.toggleFocusMode();
           }, (): boolean => this.documentPath.length > 0);
         }
-        this.ToolButton((): string => this.rightSidebarOpen && !this.focusMode ? '收起证据' : '证据', (): void => {
+        this.ToolButton((): string => this.windowWidth < 760 ?
+          (this.rightSidebarOpen && !this.focusMode ? '收起' : '证据') :
+          (this.rightSidebarOpen && !this.focusMode ? '收起证据' : '证据'), (): void => {
           const nextOpen = !this.rightSidebarOpen;
           this.rightSidebarOpen = nextOpen;
           if (this.windowWidth < 1100 && nextOpen) {
@@ -1349,9 +1528,11 @@ struct Index {
           this.exportCurrentView();
         }, (): boolean => this.documents.length > 0);
       }
-      this.ToolButton((): string => this.windowWidth < 1100 ? '网页' : '网页资料', (): void => {
-        this.startAddWeb();
-      }, (): boolean => this.isReady && this.windowWidth >= 760);
+      if (this.windowWidth >= 760) {
+        this.ToolButton((): string => this.windowWidth < 1100 ? '网页' : '网页资料', (): void => {
+          this.startAddWeb();
+        }, (): boolean => this.isReady);
+      }
       this.AccentButton(
         (): string => this.isLoading ? '处理中…' : (this.windowWidth < 1100 ? '导入' : '导入 PDF'),
         (): void => {
@@ -1365,6 +1546,33 @@ struct Index {
     .padding({ left: 16, right: 16 })
     .backgroundColor(this.panelBackground())
     .border({ width: { bottom: 1 }, color: this.dividerColor() });
+  }
+
+  @Builder
+  private StatusBar(): void {
+    Row({ space: 12 }) {
+      Text(this.statusMessage)
+        .fontSize(11)
+        .fontColor(this.secondaryText())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1);
+      if (this.windowWidth >= 760 && this.mainView === 'READER' && this.documentPath.length > 0) {
+        Text(`第 ${this.currentPage}/${this.pageCount} 页 · ${this.zoomPercent}%`)
+          .fontSize(11)
+          .fontColor(this.mutedText());
+      }
+      if (this.windowWidth >= 1100) {
+        Text('本地模式')
+          .fontSize(11)
+          .fontColor(this.accentColor());
+      }
+    }
+    .width('100%')
+    .height(28)
+    .padding({ left: 14, right: 14 })
+    .backgroundColor(this.panelBackground())
+    .border({ width: { top: 1 }, color: this.dividerColor() });
   }
 
   @Builder
@@ -1411,20 +1619,35 @@ struct Index {
         this.mainView === 'LIBRARY' && this.libraryScope === 'ALL', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'ALL';
+        this.closeCompactNavigation();
       });
       this.NavButton('最近阅读', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'RECENT', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'RECENT';
+        this.closeCompactNavigation();
       });
       this.NavButton('收藏', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'FAVORITE', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'FAVORITE';
+        this.closeCompactNavigation();
       });
       this.NavButton('复习中心', (): boolean => this.mainView === 'REVIEW', (): void => {
         this.mainView = 'REVIEW';
+        this.closeCompactNavigation();
       });
+      if (this.windowWidth < 760) {
+        Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
+        Text('添加资料')
+          .fontSize(11)
+          .fontColor(this.mutedText())
+          .width('100%');
+        this.NavButton('网页资料', (): boolean => false, (): void => {
+          this.closeCompactNavigation();
+          this.startAddWeb();
+        });
+      }
       Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
       if (this.mainView === 'READER' && this.documentPath.length > 0) {
         Row() {
@@ -1469,6 +1692,7 @@ struct Index {
                 .borderRadius(6)
                 .padding({ left: 8, right: 8 })
                 .onClick((): void => {
+                  this.closeCompactNavigation();
                   this.openDocument(document);
                 });
             }
@@ -1477,13 +1701,6 @@ struct Index {
         .width('100%')
         .layoutWeight(1);
       }
-      Text(this.statusMessage)
-        .fontSize(11)
-        .fontColor(this.secondaryText())
-        .lineHeight(17)
-        .maxLines(4)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%');
     }
     .width(220)
     .height('100%')
@@ -1495,7 +1712,9 @@ struct Index {
   @Builder
   private EmptyLibrary(): void {
     Column({ space: 14 }) {
-      Text('PDF')
+      Text(this.hasLibraryFilters() ? '筛选' :
+        this.libraryScope === 'FAVORITE' ? '收藏' :
+        this.libraryScope === 'RECENT' ? '最近' : 'PDF')
         .fontSize(19)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.accentColor())
@@ -1505,20 +1724,35 @@ struct Index {
         .padding({ top: 21 })
         .borderRadius(8)
         .backgroundColor(this.accentSoft());
-      Text(this.librarySearch.length > 0 || this.selectedTag.length > 0 ? '没有匹配的资料' : '建立第一条可追溯阅读证据')
+      Text(this.hasLibraryFilters() ? '没有匹配的资料' :
+        this.libraryScope === 'FAVORITE' ? '还没有收藏资料' :
+        this.libraryScope === 'RECENT' ? '最近 30 天没有阅读记录' : '建立第一条可追溯阅读证据')
         .fontSize(20)
         .fontWeight(FontWeight.Medium)
         .fontColor(this.primaryText());
-      Text('PDF 保存在应用本地；网页资料只保存链接、摘录和你的笔记。')
+      Text(this.hasLibraryFilters() ? '试试清除搜索词和标签筛选。' :
+        this.libraryScope === 'FAVORITE' ? '收藏常用资料后，可以从这里快速返回。' :
+        this.libraryScope === 'RECENT' ? '打开一份资料后，阅读记录会出现在这里。' :
+        'PDF 保存在应用本地；网页资料只保存链接、摘录和你的笔记。')
         .fontSize(13)
         .fontColor(this.secondaryText());
-      Row({ space: 10 }) {
-        this.AccentButton((): string => '导入 PDF', (): void => {
-          this.importPdf();
-        }, (): boolean => this.isReady && !this.isLoading);
-        this.ToolButton((): string => '添加网页资料', (): void => {
-          this.startAddWeb();
-        }, (): boolean => this.isReady);
+      if (this.hasLibraryFilters()) {
+        this.AccentButton((): string => '清除筛选', (): void => {
+          this.clearLibraryFilters();
+        });
+      } else if (this.libraryScope === 'FAVORITE' || this.libraryScope === 'RECENT') {
+        this.AccentButton((): string => '查看全部资料', (): void => {
+          this.libraryScope = 'ALL';
+        });
+      } else {
+        Row({ space: 10 }) {
+          this.AccentButton((): string => '导入 PDF', (): void => {
+            this.importPdf();
+          }, (): boolean => this.isReady && !this.isLoading);
+          this.ToolButton((): string => '添加网页资料', (): void => {
+            this.startAddWeb();
+          }, (): boolean => this.isReady);
+        }
       }
     }
     .width('100%')
@@ -1540,7 +1774,7 @@ struct Index {
         .height(52)
         .justifyContent(FlexAlign.Center)
         .borderRadius(6)
-        .backgroundColor(document.kind === 'PDF' ? this.accentSoft() : (this.darkMode ? '#49322E' : '#FBE4DF'));
+        .backgroundColor(document.kind === 'PDF' ? this.accentSoft() : this.coralSoft());
         Column({ space: 5 }) {
           Text(document.title)
             .fontSize(15)
@@ -1605,7 +1839,7 @@ struct Index {
           }
         });
         this.DangerButton((): string => '删除', (): void => {
-          this.deleteDocument(document);
+          this.requestDeleteDocument(document);
         });
         Blank();
         this.AccentButton(
@@ -1751,59 +1985,66 @@ struct Index {
         this.pdfController.setPageFit(pdfService.PageFit.FIT_WIDTH);
       }, (): boolean => this.documentPath.length > 0);
       Divider().vertical(true).height(22).color(this.dividerColor());
-      TextInput({ placeholder: '页码', text: this.pageInput })
-        .width(56)
-        .height(34)
-        .fontSize(12)
-        .fontColor(this.primaryText())
-        .textAlign(TextAlign.Center)
-        .backgroundColor(this.raisedBackground())
-        .border({ width: 1, color: this.dividerColor() })
-        .borderRadius(6)
-        .onChange((value: string): void => {
-          this.pageInput = value;
-        })
-        .onSubmit((): void => {
+      if (this.compactReaderToolbar()) {
+        Text(`第 ${this.currentPage}/${this.pageCount} 页`)
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .maxLines(1);
+      } else {
+        TextInput({ placeholder: '页码', text: this.pageInput })
+          .width(56)
+          .height(34)
+          .fontSize(12)
+          .fontColor(this.primaryText())
+          .textAlign(TextAlign.Center)
+          .backgroundColor(this.raisedBackground())
+          .border({ width: 1, color: this.dividerColor() })
+          .borderRadius(6)
+          .onChange((value: string): void => {
+            this.pageInput = value;
+          })
+          .onSubmit((): void => {
+            this.goToPage(this.pageInput);
+          });
+        Text(`/ ${this.pageCount}`)
+          .fontSize(12)
+          .fontColor(this.secondaryText());
+        this.IconToolButton($r('sys.symbol.arrow_right_circle'), (): string => '跳转页码', (): void => {
           this.goToPage(this.pageInput);
         });
-      Text(`/ ${this.pageCount}`)
-        .fontSize(12)
-        .fontColor(this.secondaryText());
-      this.IconToolButton($r('sys.symbol.arrow_right_circle'), (): string => '跳转页码', (): void => {
-        this.goToPage(this.pageInput);
-      }, (): boolean => this.documentPath.length > 0);
-      TextInput({ placeholder: '全文搜索', text: this.searchText })
-        .id('pdfSearch')
-        .width(this.windowWidth < 900 ? 120 : (this.windowWidth < 1200 ? 150 : 210))
-        .height(34)
-        .fontSize(12)
-        .fontColor(this.primaryText())
-        .placeholderColor(this.mutedText())
-        .backgroundColor(this.raisedBackground())
-        .border({ width: 1, color: this.dividerColor() })
-        .borderRadius(6)
-        .onChange((value: string): void => {
-          this.searchText = value;
-          if (this.searchedText.length > 0 && value.trim() !== this.searchedText) {
-            this.clearPdfSearch('全文搜索已清除');
-          }
-        })
-        .onSubmit((): void => {
+        TextInput({ placeholder: '全文搜索', text: this.searchText })
+          .id('pdfSearch')
+          .width(this.windowWidth < 1200 ? 150 : 210)
+          .height(34)
+          .fontSize(12)
+          .fontColor(this.primaryText())
+          .placeholderColor(this.mutedText())
+          .backgroundColor(this.raisedBackground())
+          .border({ width: 1, color: this.dividerColor() })
+          .borderRadius(6)
+          .onChange((value: string): void => {
+            this.searchText = value;
+            if (this.searchedText.length > 0 && value.trim() !== this.searchedText) {
+              this.clearPdfSearch('全文搜索已清除');
+            }
+          })
+          .onSubmit((): void => {
+            this.runSearch();
+          });
+        this.IconToolButton($r('sys.symbol.search_things'), (): string => '查找', (): void => {
           this.runSearch();
-        });
-      this.IconToolButton($r('sys.symbol.search_things'), (): string => '查找', (): void => {
-        this.runSearch();
-      }, (): boolean => this.documentPath.length > 0);
-      if (this.searchCount > 0) {
-        Text(`${this.searchIndex}/${this.searchCount}`)
-          .fontSize(11)
-          .fontColor(this.secondaryText());
-        this.IconToolButton($r('sys.symbol.chevron_left'), (): string => '上一个结果', (): void => {
-          this.moveSearch(-1);
-        });
-        this.IconToolButton($r('sys.symbol.chevron_right'), (): string => '下一个结果', (): void => {
-          this.moveSearch(1);
-        });
+        }, (): boolean => this.documentPath.length > 0);
+        if (this.searchCount > 0) {
+          Text(`${this.searchIndex}/${this.searchCount}`)
+            .fontSize(11)
+            .fontColor(this.secondaryText());
+          this.IconToolButton($r('sys.symbol.chevron_left'), (): string => '上一个结果', (): void => {
+            this.moveSearch(-1);
+          });
+          this.IconToolButton($r('sys.symbol.chevron_right'), (): string => '下一个结果', (): void => {
+            this.moveSearch(1);
+          });
+        }
       }
     }
     .width('100%')
@@ -1870,21 +2111,25 @@ struct Index {
           .width('100%');
         Text(this.selectedText)
           .fontSize(13)
-          .fontColor('#34413D')
+          .fontColor(this.highlightPreviewText())
           .lineHeight(20)
           .maxLines(6)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
           .padding(10)
           .borderRadius(6)
-          .backgroundColor('#FFF4BE');
+          .backgroundColor(this.highlightPreviewBackground());
         Row({ space: 7 }) {
           Button('高亮')
             .height(32)
             .fontSize(12)
-            .fontColor(this.evidenceKind === 'HIGHLIGHT' ? '#202724' : this.secondaryText())
-            .backgroundColor(this.evidenceKind === 'HIGHLIGHT' ? '#FFE47A' : this.raisedBackground())
-            .border({ width: 1, color: this.evidenceKind === 'HIGHLIGHT' ? '#E3C343' : this.dividerColor() })
+            .fontColor(this.evidenceKind === 'HIGHLIGHT' ? this.highlightPreviewText() : this.secondaryText())
+            .backgroundColor(this.evidenceKind === 'HIGHLIGHT' ?
+              this.highlightActiveBackground() : this.raisedBackground())
+            .border({
+              width: 1,
+              color: this.evidenceKind === 'HIGHLIGHT' ? this.highlightActiveBorder() : this.dividerColor()
+            })
             .borderRadius(6)
             .layoutWeight(1)
             .onClick((): void => {
@@ -2072,7 +2317,7 @@ struct Index {
                 this.startEditEvidence(card);
               });
               this.DangerButton((): string => '删除', (): void => {
-                this.deleteEvidence(card);
+                this.requestDeleteEvidence(card);
               });
             }
             .width('100%');
@@ -2094,7 +2339,7 @@ struct Index {
               this.startEditEvidence(card);
             });
             this.DangerButton((): string => '删除', (): void => {
-              this.deleteEvidence(card);
+              this.requestDeleteEvidence(card);
             });
           }
           .width('100%');
@@ -2201,15 +2446,25 @@ struct Index {
       .border({ width: { bottom: 1 }, color: this.dividerColor() });
       if (this.filteredReviewCards().length === 0) {
         Column({ space: 10 }) {
-          Text(this.reviewSearch.trim().length > 0 ||
-            this.reviewSelectedTag.length > 0 ||
-            this.reviewFilter !== 'ALL' ? '没有匹配的证据卡' : '当前没有证据卡')
+          Text(this.hasReviewFilters() ? '没有匹配的证据卡' : '当前没有证据卡')
             .fontSize(18)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.primaryText());
-          Text('阅读 PDF 并选择原文后，可创建待复习证据。')
+          Text(this.hasReviewFilters() ?
+            '试试清除搜索、标签和复习状态筛选。' :
+            '阅读 PDF 并选择原文后，可创建待复习证据。')
             .fontSize(13)
             .fontColor(this.secondaryText());
+          if (this.hasReviewFilters()) {
+            this.AccentButton((): string => '清除筛选', (): void => {
+              this.clearReviewFilters();
+            });
+          } else {
+            this.AccentButton((): string => '返回资料库', (): void => {
+              this.mainView = 'LIBRARY';
+              this.libraryScope = 'ALL';
+            });
+          }
         }
         .width('100%')
         .height('100%')
@@ -2238,7 +2493,7 @@ struct Index {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#66000000')
+        .backgroundColor(this.scrimColor())
         .onClick((): void => {
           this.showWebEditor = false;
         });
@@ -2254,61 +2509,69 @@ struct Index {
           });
         }
         .width('100%');
-        TextInput({ placeholder: '标题（可选）', text: this.webTitle })
-          .width('100%')
-          .height(38)
-          .fontColor(this.primaryText())
-          .placeholderColor(this.mutedText())
-          .backgroundColor(this.raisedBackground())
-          .border({ width: 1, color: this.dividerColor() })
-          .borderRadius(6)
-          .onChange((value: string): void => {
-            this.webTitle = value;
-          });
-        TextInput({ placeholder: 'https://example.com/article', text: this.webUrl })
-          .width('100%')
-          .height(38)
-          .fontColor(this.primaryText())
-          .placeholderColor(this.mutedText())
-          .backgroundColor(this.raisedBackground())
-          .border({ width: 1, color: this.dividerColor() })
-          .borderRadius(6)
-          .onChange((value: string): void => {
-            this.webUrl = value;
-          });
-        TextArea({ placeholder: '粘贴需要保留的原文摘录', text: this.webExcerpt })
-          .width('100%')
-          .height(120)
-          .fontColor(this.primaryText())
-          .placeholderColor(this.mutedText())
-          .backgroundColor(this.raisedBackground())
-          .border({ width: 1, color: this.dividerColor() })
-          .borderRadius(6)
-          .onChange((value: string): void => {
-            this.webExcerpt = value;
-          });
-        TextArea({ placeholder: '个人笔记', text: this.webNote })
-          .width('100%')
-          .height(90)
-          .fontColor(this.primaryText())
-          .placeholderColor(this.mutedText())
-          .backgroundColor(this.raisedBackground())
-          .border({ width: 1, color: this.dividerColor() })
-          .borderRadius(6)
-          .onChange((value: string): void => {
-            this.webNote = value;
-          });
-        TextInput({ placeholder: '标签，使用逗号分隔', text: this.webTags })
-          .width('100%')
-          .height(38)
-          .fontColor(this.primaryText())
-          .placeholderColor(this.mutedText())
-          .backgroundColor(this.raisedBackground())
-          .border({ width: 1, color: this.dividerColor() })
-          .borderRadius(6)
-          .onChange((value: string): void => {
-            this.webTags = value;
-          });
+        Scroll() {
+          Column({ space: 12 }) {
+            TextInput({ placeholder: '标题（可选）', text: this.webTitle })
+              .width('100%')
+              .height(38)
+              .fontColor(this.primaryText())
+              .placeholderColor(this.mutedText())
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() })
+              .borderRadius(6)
+              .onChange((value: string): void => {
+                this.webTitle = value;
+              });
+            TextInput({ placeholder: 'https://example.com/article', text: this.webUrl })
+              .width('100%')
+              .height(38)
+              .fontColor(this.primaryText())
+              .placeholderColor(this.mutedText())
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() })
+              .borderRadius(6)
+              .onChange((value: string): void => {
+                this.webUrl = value;
+              });
+            TextArea({ placeholder: '粘贴需要保留的原文摘录', text: this.webExcerpt })
+              .width('100%')
+              .height(120)
+              .fontColor(this.primaryText())
+              .placeholderColor(this.mutedText())
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() })
+              .borderRadius(6)
+              .onChange((value: string): void => {
+                this.webExcerpt = value;
+              });
+            TextArea({ placeholder: '个人笔记', text: this.webNote })
+              .width('100%')
+              .height(90)
+              .fontColor(this.primaryText())
+              .placeholderColor(this.mutedText())
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() })
+              .borderRadius(6)
+              .onChange((value: string): void => {
+                this.webNote = value;
+              });
+            TextInput({ placeholder: '标签，使用逗号分隔', text: this.webTags })
+              .width('100%')
+              .height(38)
+              .fontColor(this.primaryText())
+              .placeholderColor(this.mutedText())
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() })
+              .borderRadius(6)
+              .onChange((value: string): void => {
+                this.webTags = value;
+              });
+          }
+          .width('100%');
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Auto);
         Row({ space: 9 }) {
           if (this.editingWebId.length > 0) {
             this.ToolButton((): string => '打开来源', (): void => {
@@ -2328,7 +2591,8 @@ struct Index {
         }
         .width('100%');
       }
-      .width(560)
+      .width(this.compactEditorWidth(560))
+      .height(this.compactEditorHeight(560))
       .padding(20)
       .borderRadius(8)
       .backgroundColor(this.panelBackground())
@@ -2344,7 +2608,7 @@ struct Index {
       Column()
         .width('100%')
         .height('100%')
-        .backgroundColor('#66000000')
+        .backgroundColor(this.scrimColor())
         .onClick((): void => {
           this.showPdfEditor = false;
         });
@@ -2393,7 +2657,63 @@ struct Index {
         }
         .width('100%');
       }
-      .width(480)
+      .width(this.compactEditorWidth(480))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private DeleteConfirmOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.cancelDelete();
+        });
+      Column({ space: 14 }) {
+        Text(this.deleteDialogTitle())
+          .fontSize(19)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.primaryText())
+          .width('100%');
+        Text(this.deleteDialogTarget())
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryText())
+          .lineHeight(20)
+          .maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .padding({ left: 10 })
+          .border({ width: { left: 3 }, color: this.coralColor() });
+        Text(this.deleteDialogMessage())
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .lineHeight(19)
+          .width('100%');
+        Row({ space: 9 }) {
+          Blank();
+          this.ToolButton((): string => '取消', (): void => {
+            this.cancelDelete();
+          }, (): boolean => !this.isDeleting);
+          this.DangerFilledButton(
+            (): string => this.isDeleting ? '正在删除…' : '确认删除',
+            (): void => {
+              this.confirmDelete();
+            },
+            (): boolean => !this.isDeleting
+          );
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(460))
       .padding(20)
       .borderRadius(8)
       .backgroundColor(this.panelBackground())
@@ -2484,6 +2804,7 @@ struct Index {
         }
         .width('100%')
         .layoutWeight(1);
+        this.StatusBar();
       }
       .width('100%')
       .height('100%')
@@ -2506,6 +2827,7 @@ struct Index {
       })
       .onAreaChange((oldValue: Area, newValue: Area): void => {
         this.windowWidth = Number(newValue.width);
+        this.windowHeight = Number(newValue.height);
         const oldWidth = Number(oldValue.width);
         if (this.windowWidth < 1100 && oldWidth >= 1100 && !this.focusMode) {
           this.leftSidebarOpen = false;
@@ -2529,6 +2851,9 @@ struct Index {
       }
       if (this.showPdfEditor) {
         this.PdfEditorOverlay();
+      }
+      if (this.deleteTargetKind !== 'NONE') {
+        this.DeleteConfirmOverlay();
       }
     }
     .width('100%')
