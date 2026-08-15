@@ -132,6 +132,10 @@ struct Index {
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
   private statusGeneration: number = 0;
+  private readPositionGeneration: number = 0;
+  private pendingReadDocumentId: string = '';
+  private pendingReadPageIndex: number = 0;
+  private readPositionFlushTask: Promise<void> | undefined = undefined;
   private searchGeneration: number = 0;
   private thumbnailGeneration: number = 0;
   private reviewSessionSourceRightSidebarOpen: boolean = true;
@@ -145,10 +149,15 @@ struct Index {
 
   aboutToAppear(): void {
     this.pdfController.registerPageChangedListener((pageIndex: number): void => {
+      const previousContextStatus = this.contextStatusMessage();
+      const shouldRefreshContextStatus = this.statusMessage === previousContextStatus;
       this.currentPage = pageIndex + 1;
       this.pageInput = `${this.currentPage}`;
-      if (this.activeDocumentId.length > 0) {
-        this.persistReadPosition(pageIndex);
+      if (shouldRefreshContextStatus) {
+        this.showContextStatus();
+      }
+      if (this.activeDocumentId.length > 0 && !this.isLoading) {
+        this.scheduleReadPosition(pageIndex);
       }
     });
     this.pdfController.registerScaleChangedListener((scale: number): void => {
@@ -162,6 +171,8 @@ struct Index {
 
   aboutToDisappear(): void {
     this.statusGeneration++;
+    this.readPositionGeneration++;
+    this.flushPendingReadPosition();
     if (this.documentPath.length > 0) {
       this.pdfController.releaseDocument();
     }
@@ -645,16 +656,54 @@ struct Index {
     this.documents = records;
   }
 
-  private async persistReadPosition(pageIndex: number): Promise<void> {
-    if (!this.isReady || this.activeDocumentId.length === 0) {
+  private scheduleReadPosition(pageIndex: number): void {
+    if (!this.isReady || this.isLoading || this.activeDocumentId.length === 0) {
       return;
     }
-    try {
-      await this.libraryRepository.updateReadPosition(this.activeDocumentId, pageIndex);
-      this.updateLocalDocument(this.activeDocumentId, pageIndex);
-    } catch (error) {
-      this.statusMessage = '阅读位置暂时无法保存，请检查存储空间';
+    const documentId = this.activeDocumentId;
+    this.updateLocalDocument(documentId, pageIndex);
+    this.pendingReadDocumentId = documentId;
+    this.pendingReadPageIndex = pageIndex;
+    const generation = ++this.readPositionGeneration;
+    setTimeout((): void => {
+      if (generation !== this.readPositionGeneration) {
+        return;
+      }
+      this.flushPendingReadPosition();
+    }, 500);
+  }
+
+  private flushPendingReadPosition(): Promise<void> {
+    if (this.readPositionFlushTask !== undefined) {
+      return this.readPositionFlushTask;
     }
+    if (this.pendingReadDocumentId.length === 0) {
+      return Promise.resolve();
+    }
+    this.readPositionFlushTask = this.drainPendingReadPositions();
+    return this.readPositionFlushTask;
+  }
+
+  private async drainPendingReadPositions(): Promise<void> {
+    try {
+      while (this.pendingReadDocumentId.length > 0) {
+        const documentId = this.pendingReadDocumentId;
+        const pageIndex = this.pendingReadPageIndex;
+        this.pendingReadDocumentId = '';
+        try {
+          await this.libraryRepository.updateReadPosition(documentId, pageIndex);
+        } catch (error) {
+          this.statusMessage = '阅读位置暂时无法保存，请检查存储空间';
+        }
+      }
+    } finally {
+      this.readPositionFlushTask = undefined;
+    }
+  }
+
+  private async flushReadPositionBeforeDocumentChange(): Promise<void> {
+    this.readPositionGeneration++;
+    await this.flushPendingReadPosition();
   }
 
   private parseErrorMessage(result: pdfService.ParseResult): string {
@@ -730,6 +779,7 @@ struct Index {
   }
 
   private async finishPdfImport(imported: ImportedPdf): Promise<void> {
+    await this.flushReadPositionBeforeDocumentChange();
     if (this.documentPath.length > 0) {
       this.pdfController.releaseDocument();
     }
@@ -804,6 +854,7 @@ struct Index {
       await this.openWebSource(record);
       return;
     }
+    await this.flushReadPositionBeforeDocumentChange();
     this.isLoading = true;
     this.statusMessage = `正在打开 ${record.title}…`;
     try {
@@ -1492,6 +1543,7 @@ struct Index {
   private async deleteDocument(document: DocumentRecord): Promise<void> {
     try {
       if (document.id === this.activeDocumentId && this.documentPath.length > 0) {
+        await this.flushReadPositionBeforeDocumentChange();
         this.pdfController.releaseDocument();
         this.documentPath = '';
         this.activeDocumentId = '';
