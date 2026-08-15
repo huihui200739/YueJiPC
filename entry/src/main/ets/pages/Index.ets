@@ -47,7 +47,10 @@ type EvidenceDraftAction =
   'IMPORT_DROPPED_PDF' |
   'DELETE_DOCUMENT' |
   'RETURN_TO_EVIDENCE' |
-  'START_REVIEW_SESSION';
+  'START_REVIEW_SESSION' |
+  'SHOW_LIBRARY' |
+  'SHOW_REVIEW' |
+  'ADD_WEB';
 
 interface ThumbnailRecord {
   pageIndex: number;
@@ -234,6 +237,22 @@ struct Index {
     this.evidenceDraftAction = 'NONE';
     this.evidenceDraftTargetId = '';
     this.evidenceDraftUri = '';
+    if (this.hasEvidenceDraft() && this.activeDocumentId.length > 0 && this.documentPath.length > 0) {
+      const layoutChanged = !this.rightSidebarOpen ||
+        this.focusMode ||
+        (this.windowWidth < 1100 && this.leftSidebarOpen);
+      this.mainView = 'READER';
+      this.rightSidebarOpen = true;
+      this.focusMode = false;
+      if (this.windowWidth < 1100) {
+        this.leftSidebarOpen = false;
+      }
+      if (layoutChanged) {
+        this.saveSettings();
+      }
+      this.statusMessage = `已返回证据卡草稿：${this.selectedSourceLabel()}`;
+      return;
+    }
     this.statusMessage = '已保留当前证据卡草稿';
   }
 
@@ -271,6 +290,17 @@ struct Index {
       }
     } else if (action === 'START_REVIEW_SESSION') {
       this.startReviewSession();
+      return;
+    } else if (action === 'SHOW_LIBRARY') {
+      const scope: LibraryScope = targetId === 'RECENT' ? 'RECENT' :
+        targetId === 'FAVORITE' ? 'FAVORITE' : 'ALL';
+      this.showLibrary(scope);
+      return;
+    } else if (action === 'SHOW_REVIEW') {
+      this.showReview();
+      return;
+    } else if (action === 'ADD_WEB') {
+      this.startAddWeb();
       return;
     }
     this.statusMessage = '目标内容已不存在，证据卡草稿已放弃';
@@ -681,24 +711,26 @@ struct Index {
   }
 
   private async openDocument(record: DocumentRecord): Promise<void> {
-    if (record.kind === 'WEB') {
-      await this.openWebSource(record);
-      return;
-    }
     if (this.editingEvidenceId.length > 0) {
       if (this.requestEditorDraftDiscard('EVIDENCE', 'OPEN_DOCUMENT', record.id)) {
         return;
       }
       this.closeEditor('EVIDENCE');
     }
-    if (this.isLoading) {
-      return;
-    }
-    if (!this.importService.fileExists(record.source)) {
-      this.statusMessage = `找不到“${record.title}”的本地 PDF 副本`;
-      return;
+    if (record.kind === 'PDF') {
+      if (this.isLoading) {
+        return;
+      }
+      if (!this.importService.fileExists(record.source)) {
+        this.statusMessage = `找不到“${record.title}”的本地 PDF 副本`;
+        return;
+      }
     }
     if (this.requestEvidenceDraftDiscard('OPEN_DOCUMENT', record.id)) {
+      return;
+    }
+    if (record.kind === 'WEB') {
+      await this.openWebSource(record);
       return;
     }
     this.isLoading = true;
@@ -1312,6 +1344,23 @@ struct Index {
       `已返回专注复习，第 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length} 张`;
   }
 
+  private showLibrary(scope: LibraryScope): void {
+    if (this.requestEvidenceDraftDiscard('SHOW_LIBRARY', scope)) {
+      return;
+    }
+    this.mainView = 'LIBRARY';
+    this.libraryScope = scope;
+    this.closeCompactNavigation();
+  }
+
+  private showReview(): void {
+    if (this.requestEvidenceDraftDiscard('SHOW_REVIEW')) {
+      return;
+    }
+    this.mainView = 'REVIEW';
+    this.closeCompactNavigation();
+  }
+
   private hasLibraryFilters(): boolean {
     return this.librarySearch.trim().length > 0 || this.selectedTag.length > 0;
   }
@@ -1489,6 +1538,9 @@ struct Index {
   }
 
   private startAddWeb(): void {
+    if (this.requestEvidenceDraftDiscard('ADD_WEB')) {
+      return;
+    }
     this.showPdfEditor = false;
     this.editingWebId = '';
     this.webTitle = '';
@@ -2324,25 +2376,18 @@ struct Index {
         .width('100%');
       this.NavButton('资料库', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'ALL', (): void => {
-        this.mainView = 'LIBRARY';
-        this.libraryScope = 'ALL';
-        this.closeCompactNavigation();
+        this.showLibrary('ALL');
       }, (): boolean => !this.reviewSessionSourceOpen);
       this.NavButton('最近阅读', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'RECENT', (): void => {
-        this.mainView = 'LIBRARY';
-        this.libraryScope = 'RECENT';
-        this.closeCompactNavigation();
+        this.showLibrary('RECENT');
       }, (): boolean => !this.reviewSessionSourceOpen);
       this.NavButton('收藏', (): boolean =>
         this.mainView === 'LIBRARY' && this.libraryScope === 'FAVORITE', (): void => {
-        this.mainView = 'LIBRARY';
-        this.libraryScope = 'FAVORITE';
-        this.closeCompactNavigation();
+        this.showLibrary('FAVORITE');
       }, (): boolean => !this.reviewSessionSourceOpen);
       this.NavButton('复习中心', (): boolean => this.mainView === 'REVIEW', (): void => {
-        this.mainView = 'REVIEW';
-        this.closeCompactNavigation();
+        this.showReview();
       }, (): boolean => !this.reviewSessionSourceOpen);
       if (this.windowWidth < 760) {
         Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
@@ -2772,7 +2817,7 @@ struct Index {
         .fontSize(13)
         .fontColor(this.secondaryText());
       this.AccentButton((): string => '返回资料库', (): void => {
-        this.mainView = 'LIBRARY';
+        this.showLibrary('ALL');
       });
     }
     .width('100%')
@@ -3200,8 +3245,7 @@ struct Index {
             });
           } else {
             this.AccentButton((): string => '返回资料库', (): void => {
-              this.mainView = 'LIBRARY';
-              this.libraryScope = 'ALL';
+              this.showLibrary('ALL');
             });
           }
         }
