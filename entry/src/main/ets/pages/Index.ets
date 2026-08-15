@@ -131,6 +131,7 @@ struct Index {
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
+  private statusGeneration: number = 0;
   private searchGeneration: number = 0;
   private thumbnailGeneration: number = 0;
   private reviewSessionSourceRightSidebarOpen: boolean = true;
@@ -160,6 +161,7 @@ struct Index {
   }
 
   aboutToDisappear(): void {
+    this.statusGeneration++;
     if (this.documentPath.length > 0) {
       this.pdfController.releaseDocument();
     }
@@ -172,6 +174,42 @@ struct Index {
       return undefined;
     }
     return context as common.UIAbilityContext;
+  }
+
+  private contextStatusMessage(): string {
+    if (!this.isReady) {
+      return '正在准备本地资料库…';
+    }
+    if (this.mainView === 'READER') {
+      const document = this.activeDocument();
+      if (document !== undefined && this.pageCount > 0) {
+        return `${document.title} · 第 ${this.currentPage}/${this.pageCount} 页`;
+      }
+      return '阅读工作台已就绪';
+    }
+    if (this.mainView === 'REVIEW') {
+      const pendingCount = this.reviewCount('TO_REVIEW');
+      return pendingCount > 0 ?
+        `复习中心 · ${pendingCount} 张证据待复习` :
+        '复习中心 · 当前没有待复习证据';
+    }
+    return `${this.documents.length} 份资料 · ${this.evidenceCards.length} 张证据卡`;
+  }
+
+  private showContextStatus(message: string = ''): void {
+    this.statusGeneration++;
+    this.statusMessage = message.length > 0 ? message : this.contextStatusMessage();
+  }
+
+  private showTransientStatus(message: string): void {
+    const generation = ++this.statusGeneration;
+    this.statusMessage = message;
+    setTimeout((): void => {
+      if (generation !== this.statusGeneration || this.statusMessage !== message) {
+        return;
+      }
+      this.showContextStatus();
+    }, 4200);
   }
 
   private handleTextSelection(selection: pdfViewManager.TextSelectedParam): void {
@@ -215,7 +253,7 @@ struct Index {
       return;
     }
     this.resetEvidenceDraft();
-    this.statusMessage = '已取消本次证据卡';
+    this.showTransientStatus('已取消本次证据卡');
   }
 
   private requestEvidenceDraftDiscard(
@@ -281,10 +319,10 @@ struct Index {
       if (layoutChanged) {
         this.saveSettings();
       }
-      this.statusMessage = `已返回证据卡草稿：${this.selectedSourceLabel()}`;
+      this.showTransientStatus(`已返回证据卡草稿：${this.selectedSourceLabel()}`);
       return;
     }
-    this.statusMessage = '已保留当前证据卡草稿';
+    this.showTransientStatus('已保留当前证据卡草稿');
   }
 
   private async discardEvidenceDraftAndContinue(): Promise<void> {
@@ -295,7 +333,7 @@ struct Index {
     this.evidenceDraftTargetId = '';
     this.evidenceDraftUri = '';
     this.resetEvidenceDraft();
-    this.statusMessage = '已放弃未保存的证据卡草稿';
+    this.showTransientStatus('已放弃未保存的证据卡草稿');
     if (action === 'OPEN_DOCUMENT') {
       const document = this.documentById(targetId);
       if (document !== undefined) {
@@ -441,6 +479,7 @@ struct Index {
       return;
     }
     this.closeEditor(kind);
+    this.showContextStatus();
   }
 
   private cancelEditorDraftDiscard(): void {
@@ -448,7 +487,7 @@ struct Index {
     this.editorDraftAction = 'NONE';
     this.editorDraftTargetId = '';
     this.editorDraftUri = '';
-    this.statusMessage = '已保留当前编辑内容';
+    this.showTransientStatus('已保留当前编辑内容');
   }
 
   private async discardEditorDraftAndContinue(): Promise<void> {
@@ -501,7 +540,7 @@ struct Index {
       this.requestStartReviewSession();
       return;
     } else if (action === 'CLOSE') {
-      this.statusMessage = '已放弃未保存的修改';
+      this.showTransientStatus('已放弃未保存的修改');
       return;
     }
     this.statusMessage = '目标内容已不存在，未保存的修改已放弃';
@@ -566,9 +605,9 @@ struct Index {
       this.evidenceColor = settings.defaultHighlightColor;
       await this.reloadData();
       this.isReady = true;
-      this.statusMessage = this.documents.length > 0 ?
+      this.showTransientStatus(this.documents.length > 0 ?
         `已恢复 ${this.documents.length} 份资料与 ${this.evidenceCards.length} 张证据卡` :
-        '资料库已就绪，导入一份 PDF 或添加网页资料';
+        '资料库已就绪，导入一份 PDF 或添加网页资料');
     } catch (error) {
       this.statusMessage = '本地资料库初始化失败，请检查存储空间后重试';
     }
@@ -649,11 +688,11 @@ struct Index {
       return;
     }
     this.isLoading = true;
-    this.statusMessage = '正在复制 PDF 到阅迹本地资料库…';
+    this.statusMessage = '正在选择并导入 PDF…';
     try {
       const imported = await this.importService.chooseAndCopyPdf(context);
       if (imported === undefined) {
-        this.statusMessage = '已取消导入';
+        this.showTransientStatus('已取消导入');
         return;
       }
       await this.finishPdfImport(imported);
@@ -718,7 +757,7 @@ struct Index {
     }
     await this.reloadData();
     this.activateLoadedPdf(imported.record);
-    this.statusMessage = `已导入 ${imported.record.title}，共 ${imported.record.pageCount} 页`;
+    this.showTransientStatus(`已导入 ${imported.record.title}，共 ${imported.record.pageCount} 页`);
   }
 
   private activateLoadedPdf(record: DocumentRecord): void {
@@ -782,7 +821,7 @@ struct Index {
       this.updateLocalDocument(record.id, record.currentPage, actualPageCount);
       record.pageCount = actualPageCount;
       this.activateLoadedPdf(record);
-      this.statusMessage = `已打开 ${record.title}`;
+      this.showTransientStatus(`已打开 ${record.title}`);
     } catch (error) {
       this.documentPath = '';
       this.statusMessage = 'PDF 打开失败，请重新导入该资料';
@@ -911,7 +950,9 @@ struct Index {
       this.pdfController.addMarkupAnnotation(type, selectedRects, card.color);
       this.evidenceCards = await this.evidenceRepository.listAll();
       this.resetEvidenceDraft();
-      this.statusMessage = `证据卡已保存：${this.documentTitle(card.documentId)}，第 ${card.pageIndex + 1} 页`;
+      this.showTransientStatus(
+        `证据卡已保存：${this.documentTitle(card.documentId)}，第 ${card.pageIndex + 1} 页`
+      );
     } catch (error) {
       if (databaseInserted) {
         try {
@@ -941,6 +982,7 @@ struct Index {
     this.editingEvidenceId = card.id;
     this.editingEvidenceNote = card.note;
     this.editingEvidenceTags = card.tags;
+    this.showContextStatus(`正在编辑证据卡：${this.evidenceSourceLabel(card)}`);
   }
 
   private async saveEvidenceEdit(card: EvidenceCard): Promise<void> {
@@ -960,7 +1002,7 @@ struct Index {
       );
       this.evidenceCards = await this.evidenceRepository.listAll();
       this.closeEditor('EVIDENCE');
-      this.statusMessage = '证据卡修改已保存';
+      this.showTransientStatus('证据卡修改已保存');
     } catch (error) {
       this.statusMessage = '证据卡修改保存失败';
     } finally {
@@ -973,7 +1015,7 @@ struct Index {
     try {
       await this.evidenceRepository.setReviewStatus(card.id, next);
       this.evidenceCards = await this.evidenceRepository.listAll();
-      this.statusMessage = next === 'MASTERED' ? '已标记为掌握' : '已加入待复习';
+      this.showTransientStatus(next === 'MASTERED' ? '已标记为掌握' : '已加入待复习');
     } catch (error) {
       this.statusMessage = '复习状态保存失败';
     }
@@ -989,7 +1031,7 @@ struct Index {
           await this.reloadActivePdf(document);
         }
       }
-      this.statusMessage = '证据卡与对应阅迹标注已删除';
+      this.showTransientStatus('证据卡与对应阅迹标注已删除');
     } catch (error) {
       this.statusMessage = '证据卡删除失败';
     }
@@ -1279,7 +1321,7 @@ struct Index {
     const reviewedCount = this.reviewSessionReviewedCount;
     const masteredCount = this.reviewSessionMasteredCount;
     this.resetReviewSession();
-    this.statusMessage = `${message}：处理 ${reviewedCount} 张，掌握 ${masteredCount} 张`;
+    this.showTransientStatus(`${message}：处理 ${reviewedCount} 张，掌握 ${masteredCount} 张`);
   }
 
   private closeReviewSession(): void {
@@ -1383,6 +1425,7 @@ struct Index {
     this.mainView = 'LIBRARY';
     this.libraryScope = scope;
     this.closeCompactNavigation();
+    this.showContextStatus();
   }
 
   private showReview(): void {
@@ -1391,6 +1434,7 @@ struct Index {
     }
     this.mainView = 'REVIEW';
     this.closeCompactNavigation();
+    this.showContextStatus();
   }
 
   private hasLibraryFilters(): boolean {
@@ -1400,7 +1444,7 @@ struct Index {
   private clearLibraryFilters(): void {
     this.librarySearch = '';
     this.selectedTag = '';
-    this.statusMessage = '已清除资料筛选';
+    this.showTransientStatus('已清除资料筛选');
   }
 
   private hasReviewFilters(): boolean {
@@ -1413,7 +1457,7 @@ struct Index {
     this.reviewSearch = '';
     this.reviewSelectedTag = '';
     this.reviewFilter = 'ALL';
-    this.statusMessage = '已清除复习筛选';
+    this.showTransientStatus('已清除复习筛选');
   }
 
   private allTags(): string[] {
@@ -1439,7 +1483,7 @@ struct Index {
     try {
       await this.libraryRepository.setFavorite(document.id, !document.favorite);
       await this.reloadData();
-      this.statusMessage = document.favorite ? '已取消收藏' : '已加入收藏';
+      this.showTransientStatus(document.favorite ? '已取消收藏' : '已加入收藏');
     } catch (error) {
       this.statusMessage = '收藏状态保存失败';
     }
@@ -1463,7 +1507,7 @@ struct Index {
         }
       }
       await this.reloadData();
-      this.statusMessage = `已从本地资料库删除 ${document.title}`;
+      this.showTransientStatus(`已从本地资料库删除 ${document.title}`);
     } catch (error) {
       this.statusMessage = '资料已从列表移除，但部分本地文件可能需要稍后清理';
       await this.reloadData();
@@ -1581,6 +1625,7 @@ struct Index {
     this.webNote = '';
     this.webTags = '';
     this.showWebEditor = true;
+    this.showContextStatus('正在添加网页资料');
   }
 
   private startEditWeb(document: DocumentRecord): void {
@@ -1592,6 +1637,7 @@ struct Index {
     this.webNote = document.note;
     this.webTags = document.tags;
     this.showWebEditor = true;
+    this.showContextStatus(`正在编辑网页资料：${document.title}`);
   }
 
   private startEditPdf(document: DocumentRecord): void {
@@ -1600,6 +1646,7 @@ struct Index {
     this.pdfTitle = document.title;
     this.pdfTags = document.tags;
     this.showPdfEditor = true;
+    this.showContextStatus(`正在编辑 PDF 资料：${document.title}`);
   }
 
   private async savePdfDocument(): Promise<void> {
@@ -1622,7 +1669,7 @@ struct Index {
       );
       await this.reloadData();
       this.closeEditor('PDF');
-      this.statusMessage = 'PDF 资料信息已更新';
+      this.showTransientStatus('PDF 资料信息已更新');
     } catch (error) {
       this.statusMessage = 'PDF 资料信息保存失败';
     } finally {
@@ -1664,7 +1711,7 @@ struct Index {
       }
       await this.reloadData();
       this.closeEditor('WEB');
-      this.statusMessage = isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新';
+      this.showTransientStatus(isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新');
     } catch (error) {
       this.statusMessage = '网页资料卡保存失败';
     } finally {
@@ -1686,7 +1733,7 @@ struct Index {
         this.statusMessage = `已打开 ${document.title}，但最近阅读时间未能保存`;
         return;
       }
-      this.statusMessage = `已通过系统浏览器打开 ${document.title}`;
+      this.showTransientStatus(`已通过系统浏览器打开 ${document.title}`);
     } catch (error) {
       this.statusMessage = '无法打开网址，请检查网址或默认浏览器设置';
     }
@@ -1701,10 +1748,11 @@ struct Index {
       this.statusMessage = '当前范围没有可导出的资料';
       return;
     }
+    this.statusMessage = '正在选择 Markdown 导出位置…';
     try {
       const content = this.exportService.buildMarkdown(documents, cards, title);
       const saved = await this.exportService.exportMarkdown(context, content);
-      this.statusMessage = saved ? 'Markdown 学习笔记已导出' : '已取消导出';
+      this.showTransientStatus(saved ? 'Markdown 学习笔记已导出' : '已取消导出');
     } catch (error) {
       this.statusMessage = '导出失败，请检查目标位置是否可写';
     }
@@ -3988,6 +4036,9 @@ struct Index {
       })
       .onDragLeave((): void => {
         this.isDragOver = false;
+        if (this.statusMessage === '释放鼠标即可导入 PDF') {
+          this.showContextStatus();
+        }
       })
       .onDrop((event: DragEvent): void => {
         this.handleDrop(event);
