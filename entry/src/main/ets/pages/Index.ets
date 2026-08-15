@@ -58,10 +58,13 @@ struct Index {
   @State private editingEvidenceNote: string = '';
   @State private editingEvidenceTags: string = '';
   @State private searchText: string = '';
+  @State private searchedText: string = '';
   @State private searchCount: number = 0;
   @State private searchIndex: number = 0;
   @State private librarySearch: string = '';
   @State private selectedTag: string = '';
+  @State private reviewSearch: string = '';
+  @State private reviewSelectedTag: string = '';
   @State private statusMessage: string = '正在准备本地资料库…';
   @State private darkMode: boolean = false;
   @State private focusMode: boolean = false;
@@ -85,6 +88,7 @@ struct Index {
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
+  private searchGeneration: number = 0;
   private thumbnailGeneration: number = 0;
   private database: YueJiDatabase = new YueJiDatabase();
   private libraryRepository: LibraryRepository = new LibraryRepository(this.database);
@@ -291,8 +295,10 @@ struct Index {
     this.currentPage = record.currentPage + 1;
     this.pageInput = `${this.currentPage}`;
     this.searchText = '';
+    this.searchedText = '';
     this.searchCount = 0;
     this.searchIndex = 0;
+    this.searchGeneration++;
     this.selectedText = '';
     this.selectedRects = [];
     this.evidenceNote = '';
@@ -572,18 +578,41 @@ struct Index {
     }
     const page = Number(value);
     if (!Number.isInteger(page) || page < 1 || page > this.pageCount) {
+      this.pageInput = `${this.currentPage}`;
       this.statusMessage = `请输入 1-${this.pageCount} 的页码`;
       return;
     }
     this.pdfController.goToPage(page - 1);
   }
 
+  private clearPdfSearch(message: string = ''): void {
+    this.searchGeneration++;
+    this.searchedText = '';
+    this.searchCount = 0;
+    this.searchIndex = 0;
+    if (this.documentPath.length > 0) {
+      this.pdfController.clearSearch();
+    }
+    if (message.length > 0) {
+      this.statusMessage = message;
+    }
+  }
+
   private runSearch(): void {
     const keyword = this.searchText.trim();
-    if (this.documentPath.length === 0 || keyword.length === 0) {
+    if (this.documentPath.length === 0) {
       return;
     }
+    if (keyword.length === 0) {
+      this.clearPdfSearch('请输入要搜索的内容');
+      return;
+    }
+    const generation = ++this.searchGeneration;
+    this.searchedText = keyword;
     this.pdfController.searchKey(keyword, (count: number): void => {
+      if (generation !== this.searchGeneration || this.searchText.trim() !== keyword) {
+        return;
+      }
       this.searchCount = count;
       this.searchIndex = count > 0 ? 1 : 0;
       this.statusMessage = count > 0 ? `找到 ${count} 处“${keyword}”` : `没有找到“${keyword}”`;
@@ -603,6 +632,63 @@ struct Index {
     return this.evidenceCards
       .filter((card: EvidenceCard): boolean => card.documentId === this.activeDocumentId)
       .sort((left: EvidenceCard, right: EvidenceCard): number => left.pageIndex - right.pageIndex);
+  }
+
+  private evidenceCountForDocument(documentId: string): number {
+    return this.evidenceCards.filter((card: EvidenceCard): boolean => card.documentId === documentId).length;
+  }
+
+  private pendingCountForDocument(documentId: string): number {
+    return this.evidenceCards.filter((card: EvidenceCard): boolean =>
+      card.documentId === documentId && card.reviewStatus === 'TO_REVIEW').length;
+  }
+
+  private documentProgress(document: DocumentRecord): number {
+    if (document.kind !== 'PDF' || document.pageCount <= 0) {
+      return 0;
+    }
+    return Math.min(100, Math.max(1, Math.round((document.currentPage + 1) * 100 / document.pageCount)));
+  }
+
+  private documentRenderKey(document: DocumentRecord): string {
+    return `${document.id}:${document.lastReadAt}:${document.currentPage}:${document.favorite ? 1 : 0}:` +
+      `${document.pageCount}:${document.title}:${document.tags}:${this.evidenceCountForDocument(document.id)}:` +
+      `${this.pendingCountForDocument(document.id)}`;
+  }
+
+  private evidenceRenderKey(card: EvidenceCard): string {
+    return `${card.id}:${card.updatedAt}:${card.reviewStatus}:${card.kind}:${card.color}:${card.pageIndex}:` +
+      `${card.quote}:${card.note}:${card.tags}`;
+  }
+
+  private recentPdfDocument(): DocumentRecord | undefined {
+    return this.documents
+      .filter((document: DocumentRecord): boolean => document.kind === 'PDF')
+      .sort((left: DocumentRecord, right: DocumentRecord): number => right.lastReadAt - left.lastReadAt)[0];
+  }
+
+  private reviewCount(filter: ReviewFilter): number {
+    return this.evidenceCards.filter((card: EvidenceCard): boolean =>
+      filter === 'ALL' || card.reviewStatus === filter).length;
+  }
+
+  private evidenceKindLabel(kind: EvidenceKind): string {
+    if (kind === 'UNDERLINE') {
+      return '下划线';
+    }
+    if (kind === 'QUOTE') {
+      return '摘录';
+    }
+    return '高亮';
+  }
+
+  private evidenceSourceLabel(card: EvidenceCard): string {
+    const document = this.documentById(card.documentId);
+    if (document === undefined) {
+      return '已删除资料';
+    }
+    return document.kind === 'WEB' ? `${document.title} · 网页摘录` :
+      `${document.title} · 第 ${card.pageIndex + 1} 页`;
   }
 
   private filteredDocuments(): DocumentRecord[] {
@@ -632,12 +718,12 @@ struct Index {
   }
 
   private filteredReviewCards(): EvidenceCard[] {
-    const keyword = this.librarySearch.trim().toLowerCase();
+    const keyword = this.reviewSearch.trim().toLowerCase();
     return this.evidenceCards.filter((card: EvidenceCard): boolean => {
       if (this.reviewFilter !== 'ALL' && card.reviewStatus !== this.reviewFilter) {
         return false;
       }
-      if (this.selectedTag.length > 0 && !tagList(card.tags).includes(this.selectedTag)) {
+      if (this.reviewSelectedTag.length > 0 && !tagList(card.tags).includes(this.reviewSelectedTag)) {
         return false;
       }
       if (keyword.length === 0) {
@@ -1022,6 +1108,10 @@ struct Index {
     return this.darkMode ? '#24443F' : '#DDEDEA';
   }
 
+  private coralSoft(): string {
+    return this.darkMode ? '#49322E' : '#FBE4DF';
+  }
+
   private coralColor(): string {
     return this.darkMode ? '#FF8D7D' : '#D95F4E';
   }
@@ -1030,16 +1120,14 @@ struct Index {
     if (event.type !== KeyType.Down) {
       return false;
     }
-    let modifier = false;
+    let controlPressed = false;
     if (event.getModifierKeyState !== undefined) {
       try {
-        modifier = event.getModifierKeyState(['ctrl']);
+        controlPressed = event.getModifierKeyState(['ctrl']);
       } catch (error) {
-        modifier = event.metaKey === 1;
       }
-    } else {
-      modifier = event.metaKey === 1;
     }
+    const modifier = controlPressed || event.metaKey === 1;
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
         if (this.showWebEditor) {
@@ -1048,6 +1136,10 @@ struct Index {
         }
         if (this.showPdfEditor) {
           this.showPdfEditor = false;
+          return true;
+        }
+        if (this.editingEvidenceId.length > 0) {
+          this.editingEvidenceId = '';
           return true;
         }
       }
@@ -1122,18 +1214,30 @@ struct Index {
   }
 
   @Builder
-  private NavButton(label: string, selected: boolean, action: () => void): void {
+  private DangerButton(label: () => string, action: () => void): void {
+    Button(label())
+      .height(34)
+      .fontSize(12)
+      .fontColor(this.coralColor())
+      .backgroundColor(Color.Transparent)
+      .borderRadius(6)
+      .padding({ left: 9, right: 9 })
+      .onClick(action);
+  }
+
+  @Builder
+  private NavButton(label: string, selected: () => boolean, action: () => void): void {
     Button() {
       Text(label)
         .width('100%')
         .fontSize(14)
-        .fontWeight(selected ? FontWeight.Medium : FontWeight.Regular)
-        .fontColor(selected ? this.accentColor() : this.secondaryText())
+        .fontWeight(selected() ? FontWeight.Medium : FontWeight.Regular)
+        .fontColor(selected() ? this.accentColor() : this.secondaryText())
         .textAlign(TextAlign.Start);
     }
       .width('100%')
       .height(38)
-      .backgroundColor(selected ? this.accentSoft() : Color.Transparent)
+      .backgroundColor(selected() ? this.accentSoft() : Color.Transparent)
       .borderRadius(6)
       .padding({ left: 12 })
       .onClick(action);
@@ -1155,19 +1259,57 @@ struct Index {
   }
 
   @Builder
+  private ReviewTagButton(tag: string): void {
+    Button(tag.length === 0 ? '全部标签' : `#${tag}`)
+      .height(30)
+      .fontSize(12)
+      .fontColor(this.reviewSelectedTag === tag ? '#FFFFFF' : this.secondaryText())
+      .backgroundColor(this.reviewSelectedTag === tag ? this.accentColor() : this.raisedBackground())
+      .border({
+        width: 1,
+        color: this.reviewSelectedTag === tag ? this.accentColor() : this.dividerColor()
+      })
+      .borderRadius(6)
+      .padding({ left: 10, right: 10 })
+      .onClick((): void => {
+        this.reviewSelectedTag = tag;
+      });
+  }
+
+  @Builder
+  private ReviewFilterButton(label: string, filter: ReviewFilter): void {
+    Button(`${label} ${this.reviewCount(filter)}`)
+      .height(32)
+      .fontSize(12)
+      .fontWeight(this.reviewFilter === filter ? FontWeight.Medium : FontWeight.Regular)
+      .fontColor(this.reviewFilter === filter ? '#FFFFFF' : this.secondaryText())
+      .backgroundColor(this.reviewFilter === filter ? this.accentColor() : this.raisedBackground())
+      .border({
+        width: 1,
+        color: this.reviewFilter === filter ? this.accentColor() : this.dividerColor()
+      })
+      .borderRadius(6)
+      .padding({ left: 11, right: 11 })
+      .onClick((): void => {
+        this.reviewFilter = filter;
+      });
+  }
+
+  @Builder
   private AppHeader(): void {
     Row({ space: 10 }) {
-      if (this.windowWidth < 1100 || this.focusMode) {
-        this.ToolButton((): string => this.leftSidebarOpen && !this.focusMode ? '收起' : '导航', (): void => {
-          const nextOpen = !this.leftSidebarOpen;
+      this.ToolButton(
+        (): string => this.leftSidebarOpen && !this.focusMode ? '收起导航' : '导航',
+        (): void => {
+          const nextOpen = this.focusMode ? true : !this.leftSidebarOpen;
           this.leftSidebarOpen = nextOpen;
           if (this.windowWidth < 1100 && nextOpen) {
             this.rightSidebarOpen = false;
           }
           this.focusMode = false;
           this.saveSettings();
-        });
-      }
+        }
+      );
       Text('阅迹')
         .fontSize(21)
         .fontWeight(FontWeight.Bold)
@@ -1265,19 +1407,22 @@ struct Index {
         .fontSize(11)
         .fontColor(this.mutedText())
         .width('100%');
-      this.NavButton('资料库', this.mainView === 'LIBRARY' && this.libraryScope === 'ALL', (): void => {
+      this.NavButton('资料库', (): boolean =>
+        this.mainView === 'LIBRARY' && this.libraryScope === 'ALL', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'ALL';
       });
-      this.NavButton('最近阅读', this.mainView === 'LIBRARY' && this.libraryScope === 'RECENT', (): void => {
+      this.NavButton('最近阅读', (): boolean =>
+        this.mainView === 'LIBRARY' && this.libraryScope === 'RECENT', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'RECENT';
       });
-      this.NavButton('收藏', this.mainView === 'LIBRARY' && this.libraryScope === 'FAVORITE', (): void => {
+      this.NavButton('收藏', (): boolean =>
+        this.mainView === 'LIBRARY' && this.libraryScope === 'FAVORITE', (): void => {
         this.mainView = 'LIBRARY';
         this.libraryScope = 'FAVORITE';
       });
-      this.NavButton('复习中心', this.mainView === 'REVIEW', (): void => {
+      this.NavButton('复习中心', (): boolean => this.mainView === 'REVIEW', (): void => {
         this.mainView = 'REVIEW';
       });
       Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
@@ -1327,7 +1472,7 @@ struct Index {
                   this.openDocument(document);
                 });
             }
-          }, (document: DocumentRecord): string => document.id);
+          }, (document: DocumentRecord): string => this.documentRenderKey(document));
         }
         .width('100%')
         .layoutWeight(1);
@@ -1383,7 +1528,7 @@ struct Index {
 
   @Builder
   private DocumentItem(document: DocumentRecord): void {
-    Column({ space: 10 }) {
+    Column({ space: 12 }) {
       Row({ space: 14 }) {
         Column() {
           Text(document.kind === 'PDF' ? 'PDF' : 'WEB')
@@ -1422,8 +1567,32 @@ struct Index {
           }
         }
         .layoutWeight(1);
+        Column({ space: 4 }) {
+          Text(`${this.evidenceCountForDocument(document.id)} 张证据`)
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.primaryText());
+          Text(`${this.pendingCountForDocument(document.id)} 张待复习`)
+            .fontSize(11)
+            .fontColor(this.pendingCountForDocument(document.id) > 0 ? this.coralColor() : this.secondaryText());
+        }
+        .alignItems(HorizontalAlign.End);
       }
       .width('100%');
+      if (document.kind === 'PDF') {
+        Row({ space: 10 }) {
+          Progress({ value: this.documentProgress(document), total: 100, type: ProgressType.Linear })
+            .height(4)
+            .color(this.accentColor())
+            .backgroundColor(this.dividerColor())
+            .borderRadius(2)
+            .layoutWeight(1);
+          Text(`已读 ${this.documentProgress(document)}%`)
+            .fontSize(10)
+            .fontColor(this.secondaryText());
+        }
+        .width('100%');
+      }
       Row({ space: 7 }) {
         this.ToolButton((): string => document.favorite ? '已收藏' : '收藏', (): void => {
           this.toggleFavorite(document);
@@ -1435,12 +1604,17 @@ struct Index {
             this.startEditPdf(document);
           }
         });
-        this.ToolButton((): string => document.kind === 'PDF' ? '阅读' : '打开来源', (): void => {
-          this.openDocument(document);
-        });
-        this.ToolButton((): string => '删除', (): void => {
+        this.DangerButton((): string => '删除', (): void => {
           this.deleteDocument(document);
         });
+        Blank();
+        this.AccentButton(
+          (): string => document.kind === 'PDF' ?
+            (document.currentPage > 0 ? '继续阅读' : '开始阅读') : '打开来源',
+          (): void => {
+            this.openDocument(document);
+          }
+        );
       }
       .width('100%');
     }
@@ -1450,6 +1624,36 @@ struct Index {
     .borderRadius(8)
     .backgroundColor(this.raisedBackground())
     .border({ width: 1, color: this.dividerColor() });
+  }
+
+  @Builder
+  private ContinueReadingBar(document: DocumentRecord): void {
+    Row({ space: 12 }) {
+      Column({ space: 3 }) {
+        Text('继续上次阅读')
+          .fontSize(11)
+          .fontColor(this.accentColor());
+        Text(document.title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryText())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%');
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start);
+      Text(`第 ${document.currentPage + 1}/${document.pageCount} 页 · ${this.documentProgress(document)}%`)
+        .fontSize(11)
+        .fontColor(this.secondaryText());
+      this.AccentButton((): string => '继续阅读', (): void => {
+        this.openDocument(document);
+      });
+    }
+    .width('100%')
+    .padding({ left: 22, right: 22, top: 10, bottom: 10 })
+    .backgroundColor(this.accentSoft())
+    .border({ width: { bottom: 1 }, color: this.dividerColor() });
   }
 
   @Builder
@@ -1502,6 +1706,13 @@ struct Index {
       .backgroundColor(this.panelBackground())
       .border({ width: { bottom: 1 }, color: this.dividerColor() });
 
+      if (this.libraryScope === 'ALL' &&
+        this.librarySearch.trim().length === 0 &&
+        this.selectedTag.length === 0 &&
+        this.recentPdfDocument() !== undefined) {
+        this.ContinueReadingBar(this.recentPdfDocument()!);
+      }
+
       if (this.filteredDocuments().length === 0) {
         this.EmptyLibrary();
       } else {
@@ -1510,7 +1721,7 @@ struct Index {
             ListItem() {
               this.DocumentItem(document);
             }
-          }, (document: DocumentRecord): string => document.id);
+          }, (document: DocumentRecord): string => this.documentRenderKey(document));
         }
         .width('100%')
         .layoutWeight(1)
@@ -1558,6 +1769,9 @@ struct Index {
       Text(`/ ${this.pageCount}`)
         .fontSize(12)
         .fontColor(this.secondaryText());
+      this.IconToolButton($r('sys.symbol.arrow_right_circle'), (): string => '跳转页码', (): void => {
+        this.goToPage(this.pageInput);
+      }, (): boolean => this.documentPath.length > 0);
       TextInput({ placeholder: '全文搜索', text: this.searchText })
         .id('pdfSearch')
         .width(this.windowWidth < 900 ? 120 : (this.windowWidth < 1200 ? 150 : 210))
@@ -1570,6 +1784,9 @@ struct Index {
         .borderRadius(6)
         .onChange((value: string): void => {
           this.searchText = value;
+          if (this.searchedText.length > 0 && value.trim() !== this.searchedText) {
+            this.clearPdfSearch('全文搜索已清除');
+          }
         })
         .onSubmit((): void => {
           this.runSearch();
@@ -1755,8 +1972,15 @@ struct Index {
   @Builder
   private EvidenceItem(card: EvidenceCard, compact: boolean = false): void {
     Column({ space: 8 }) {
-      Row() {
-        Text(`${this.documentTitle(card.documentId)} · 第 ${card.pageIndex + 1} 页`)
+      Row({ space: 6 }) {
+        Text(this.evidenceKindLabel(card.kind))
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(4)
+          .backgroundColor(this.accentSoft());
+        Text(this.evidenceSourceLabel(card))
           .fontSize(10)
           .fontColor(this.mutedText())
           .maxLines(1)
@@ -1764,7 +1988,10 @@ struct Index {
           .layoutWeight(1);
         Text(card.reviewStatus === 'MASTERED' ? '已掌握' : '待复习')
           .fontSize(10)
-          .fontColor(card.reviewStatus === 'MASTERED' ? this.accentColor() : this.coralColor());
+          .fontColor(card.reviewStatus === 'MASTERED' ? this.accentColor() : this.coralColor())
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(4)
+          .backgroundColor(card.reviewStatus === 'MASTERED' ? this.accentSoft() : this.coralSoft());
       }
       .width('100%');
       Text(card.quote)
@@ -1825,21 +2052,53 @@ struct Index {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .width('100%');
         }
-        Row({ space: 6 }) {
-          this.ToolButton((): string => '回到原文', (): void => {
-            this.returnToEvidence(card);
-          });
-          this.ToolButton((): string => card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握', (): void => {
-            this.toggleEvidenceStatus(card);
-          });
-          this.ToolButton((): string => '编辑', (): void => {
-            this.startEditEvidence(card);
-          });
-          this.ToolButton((): string => '删除', (): void => {
-            this.deleteEvidence(card);
-          });
+        if (compact) {
+          Column({ space: 6 }) {
+            Row({ space: 6 }) {
+              this.AccentButton((): string => '回到原文', (): void => {
+                this.returnToEvidence(card);
+              });
+              this.ToolButton(
+                (): string => card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握',
+                (): void => {
+                  this.toggleEvidenceStatus(card);
+                }
+              );
+            }
+            .width('100%');
+            Row({ space: 4 }) {
+              Blank();
+              this.ToolButton((): string => '编辑', (): void => {
+                this.startEditEvidence(card);
+              });
+              this.DangerButton((): string => '删除', (): void => {
+                this.deleteEvidence(card);
+              });
+            }
+            .width('100%');
+          }
+          .width('100%');
+        } else {
+          Row({ space: 6 }) {
+            this.AccentButton((): string => '回到原文', (): void => {
+              this.returnToEvidence(card);
+            });
+            this.ToolButton(
+              (): string => card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握',
+              (): void => {
+                this.toggleEvidenceStatus(card);
+              }
+            );
+            Blank();
+            this.ToolButton((): string => '编辑', (): void => {
+              this.startEditEvidence(card);
+            });
+            this.DangerButton((): string => '删除', (): void => {
+              this.deleteEvidence(card);
+            });
+          }
+          .width('100%');
         }
-        .width('100%');
       }
     }
     .width('100%')
@@ -1858,7 +2117,10 @@ struct Index {
           .fontWeight(FontWeight.Bold)
           .fontColor(this.primaryText());
         Blank();
-        Text(`${this.activeEvidenceCards().length}`)
+        Text(`${this.activeEvidenceCards().length} 张 · ${
+          this.activeEvidenceCards().filter((card: EvidenceCard): boolean =>
+            card.reviewStatus === 'TO_REVIEW').length
+        } 待复习`)
           .fontSize(11)
           .fontColor(this.accentColor())
           .padding({ left: 8, right: 8, top: 3, bottom: 3 })
@@ -1872,7 +2134,7 @@ struct Index {
           ListItem() {
             this.EvidenceItem(card, true);
           }
-        }, (card: EvidenceCard): string => card.id);
+        }, (card: EvidenceCard): string => this.evidenceRenderKey(card));
       }
       .width('100%')
       .layoutWeight(1);
@@ -1901,16 +2163,7 @@ struct Index {
               .width('100%');
           }
           .layoutWeight(1);
-          this.ToolButton((): string => '全部', (): void => {
-            this.reviewFilter = 'ALL';
-          });
-          this.ToolButton((): string => '待复习', (): void => {
-            this.reviewFilter = 'TO_REVIEW';
-          });
-          this.ToolButton((): string => '已掌握', (): void => {
-            this.reviewFilter = 'MASTERED';
-          });
-          TextInput({ placeholder: '搜索原文、笔记或来源', text: this.librarySearch })
+          TextInput({ placeholder: '搜索原文、笔记或来源', text: this.reviewSearch })
             .id('reviewSearch')
             .width(this.windowWidth < 1000 ? 210 : 260)
             .height(36)
@@ -1921,15 +2174,21 @@ struct Index {
             .border({ width: 1, color: this.dividerColor() })
             .borderRadius(6)
             .onChange((value: string): void => {
-              this.librarySearch = value;
+              this.reviewSearch = value;
             });
+        }
+        .width('100%');
+        Row({ space: 7 }) {
+          this.ReviewFilterButton('全部', 'ALL');
+          this.ReviewFilterButton('待复习', 'TO_REVIEW');
+          this.ReviewFilterButton('已掌握', 'MASTERED');
         }
         .width('100%');
         Scroll() {
           Row({ space: 8 }) {
-            this.TagButton('');
+            this.ReviewTagButton('');
             ForEach(this.allTags(), (tag: string): void => {
-              this.TagButton(tag);
+              this.ReviewTagButton(tag);
             }, (tag: string): string => tag);
           }
         }
@@ -1942,7 +2201,9 @@ struct Index {
       .border({ width: { bottom: 1 }, color: this.dividerColor() });
       if (this.filteredReviewCards().length === 0) {
         Column({ space: 10 }) {
-          Text('当前没有证据卡')
+          Text(this.reviewSearch.trim().length > 0 ||
+            this.reviewSelectedTag.length > 0 ||
+            this.reviewFilter !== 'ALL' ? '没有匹配的证据卡' : '当前没有证据卡')
             .fontSize(18)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.primaryText());
@@ -1959,7 +2220,7 @@ struct Index {
             ListItem() {
               this.EvidenceItem(card);
             }
-          }, (card: EvidenceCard): string => card.id);
+          }, (card: EvidenceCard): string => this.evidenceRenderKey(card));
         }
         .width('100%')
         .layoutWeight(1)
