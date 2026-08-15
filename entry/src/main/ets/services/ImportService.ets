@@ -1,6 +1,10 @@
 import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { createId, DocumentRecord } from '../model/Models';
+
+const LOG_DOMAIN: number = 0x59A1;
+const LOG_TAG: string = 'YueJiImport';
 
 export interface ImportedPdf {
   record: DocumentRecord;
@@ -23,6 +27,14 @@ export class ImportService {
   }
 
   async chooseAndCopyPdf(context: Context): Promise<ImportedPdf | undefined> {
+    const uri = await this.choosePdfUri(context);
+    if (uri === undefined) {
+      return undefined;
+    }
+    return this.copyPdfFromUri(context, uri);
+  }
+
+  async choosePdfUri(context: Context): Promise<string | undefined> {
     const documentPicker = new picker.DocumentViewPicker(context);
     const uris = await documentPicker.select({
       fileSuffixFilters: ['PDF|.pdf'],
@@ -31,28 +43,14 @@ export class ImportService {
     if (uris.length === 0) {
       return undefined;
     }
-    return this.copyPdfFromUri(context, uris[0]);
+    return uris[0];
   }
 
   async copyPdfFromUri(context: Context, uri: string): Promise<ImportedPdf> {
     const documentId = createId('doc');
     const libraryDirectory = `${context.filesDir}/library/${documentId}`;
-    await fs.mkdir(libraryDirectory, true);
     const targetPath = `${libraryDirectory}/source.pdf`;
-    try {
-      const source = await fs.open(uri, fs.OpenMode.READ_ONLY);
-      try {
-        await fs.copyFile(source.fd, targetPath);
-      } finally {
-        await fs.close(source);
-      }
-    } catch (error) {
-      await this.removeImportedPdf(targetPath);
-      if (error instanceof Error) {
-        throw error;
-      }
-      throw new Error('PDF 文件复制失败');
-    }
+    await this.copyPdfToPath(uri, targetPath);
     const now = Date.now();
     return {
       originalUri: uri,
@@ -73,6 +71,31 @@ export class ImportService {
     };
   }
 
+  async copyPdfToPath(uri: string, targetPath: string): Promise<void> {
+    try {
+      const lastSlash = targetPath.lastIndexOf('/');
+      if (lastSlash > 0) {
+        const targetDirectory = targetPath.substring(0, lastSlash);
+        if (!this.directoryExists(targetDirectory)) {
+          await fs.mkdir(targetDirectory, true);
+        }
+      }
+      const source = await fs.open(uri, fs.OpenMode.READ_ONLY);
+      try {
+        await fs.copyFile(source.fd, targetPath);
+      } finally {
+        await fs.close(source);
+      }
+    } catch (error) {
+      await this.removeImportedPdf(targetPath);
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'PDF copy failed: %{public}s', JSON.stringify(error));
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('PDF 文件复制失败');
+    }
+  }
+
   async removeImportedPdf(path: string): Promise<void> {
     try {
       if (this.fileExists(path)) {
@@ -89,6 +112,14 @@ export class ImportService {
   fileExists(path: string): boolean {
     try {
       return fs.statSync(path).isFile();
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private directoryExists(path: string): boolean {
+    try {
+      return fs.statSync(path).isDirectory();
     } catch (error) {
       return false;
     }

@@ -4,6 +4,7 @@ import { common } from '@kit.AbilityKit';
 import { unifiedDataChannel, uniformDataStruct } from '@kit.ArkData';
 import { KeyCode } from '@kit.InputKit';
 import { PdfView, pdfService, pdfViewManager } from '@kit.PDFKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { EvidenceRepository } from '../data/EvidenceRepository';
 import { LibraryRepository } from '../data/LibraryRepository';
 import { YueJiDatabase } from '../data/YueJiDatabase';
@@ -25,6 +26,9 @@ import { ImportService, ImportedPdf } from '../services/ImportService';
 import { LinkService, WebDraft } from '../services/LinkService';
 import { SettingsService } from '../services/SettingsService';
 
+const LOG_DOMAIN: number = 0x59A1;
+const LOG_TAG: string = 'YueJiReader';
+
 type LibraryScope = 'ALL' | 'RECENT' | 'FAVORITE';
 type ReviewFilter = 'ALL' | 'TO_REVIEW' | 'MASTERED';
 type DeleteTargetKind = 'NONE' | 'DOCUMENT' | 'EVIDENCE';
@@ -35,6 +39,7 @@ type EditorDraftAction =
   'EDIT_EVIDENCE' |
   'DELETE_EVIDENCE' |
   'OPEN_DOCUMENT' |
+  'RESTORE_PDF' |
   'IMPORT_PDF' |
   'IMPORT_DROPPED_PDF' |
   'DELETE_DOCUMENT' |
@@ -43,6 +48,7 @@ type EditorDraftAction =
 type EvidenceDraftAction =
   'NONE' |
   'OPEN_DOCUMENT' |
+  'RESTORE_PDF' |
   'IMPORT_PDF' |
   'IMPORT_DROPPED_PDF' |
   'DELETE_DOCUMENT' |
@@ -287,6 +293,10 @@ struct Index {
       const document = this.documentById(this.evidenceDraftTargetId);
       return document === undefined ? '打开其他资料' : `打开“${document.title}”`;
     }
+    if (this.evidenceDraftAction === 'RESTORE_PDF') {
+      const document = this.documentById(this.evidenceDraftTargetId);
+      return document === undefined ? '重新导入 PDF' : `修复“${document.title}”`;
+    }
     if (this.evidenceDraftAction === 'IMPORT_PDF' ||
       this.evidenceDraftAction === 'IMPORT_DROPPED_PDF') {
       return '导入新的 PDF';
@@ -349,6 +359,12 @@ struct Index {
       const document = this.documentById(targetId);
       if (document !== undefined) {
         await this.openDocument(document);
+        return;
+      }
+    } else if (action === 'RESTORE_PDF') {
+      const document = this.documentById(targetId);
+      if (document !== undefined) {
+        await this.restoreMissingPdf(document);
         return;
       }
     } else if (action === 'IMPORT_PDF') {
@@ -529,6 +545,12 @@ struct Index {
         await this.openDocument(document);
         return;
       }
+    } else if (action === 'RESTORE_PDF') {
+      const document = this.documentById(targetId);
+      if (document !== undefined) {
+        await this.restoreMissingPdf(document);
+        return;
+      }
     } else if (action === 'IMPORT_PDF') {
       await this.importPdf();
       return;
@@ -635,6 +657,10 @@ struct Index {
 
   private documentById(id: string): DocumentRecord | undefined {
     return this.documents.find((document: DocumentRecord): boolean => document.id === id);
+  }
+
+  private isPdfMissing(document: DocumentRecord): boolean {
+    return document.kind === 'PDF' && !this.importService.fileExists(document.source);
   }
 
   private documentTitle(id: string): string {
@@ -832,20 +858,26 @@ struct Index {
   }
 
   private async openDocument(record: DocumentRecord): Promise<void> {
+    const isMissingPdf = this.isPdfMissing(record);
     if (this.editingEvidenceId.length > 0) {
-      if (this.requestEditorDraftDiscard('EVIDENCE', 'OPEN_DOCUMENT', record.id)) {
+      if (this.requestEditorDraftDiscard(
+        'EVIDENCE',
+        isMissingPdf ? 'RESTORE_PDF' : 'OPEN_DOCUMENT',
+        record.id
+      )) {
         return;
       }
       this.closeEditor('EVIDENCE');
     }
-    if (record.kind === 'PDF') {
-      if (this.isLoading) {
+    if (isMissingPdf) {
+      if (this.requestEvidenceDraftDiscard('RESTORE_PDF', record.id)) {
         return;
       }
-      if (!this.importService.fileExists(record.source)) {
-        this.statusMessage = `找不到“${record.title}”的本地 PDF 副本`;
-        return;
-      }
+      await this.restoreMissingPdf(record);
+      return;
+    }
+    if (record.kind === 'PDF' && this.isLoading) {
+      return;
     }
     if (this.requestEvidenceDraftDiscard('OPEN_DOCUMENT', record.id)) {
       return;
@@ -876,6 +908,85 @@ struct Index {
     } catch (error) {
       this.documentPath = '';
       this.statusMessage = 'PDF 打开失败，请重新导入该资料';
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  private async restoreMissingPdf(record: DocumentRecord): Promise<void> {
+    const context = this.hostContext();
+    if (context === undefined || this.isLoading || record.kind !== 'PDF') {
+      return;
+    }
+    if (!this.isPdfMissing(record)) {
+      await this.openDocument(record);
+      return;
+    }
+    this.isLoading = true;
+    this.statusMessage = `请选择“${record.title}”对应的原始 PDF…`;
+    let replacementValidated = false;
+    try {
+      const uri = await this.importService.choosePdfUri(context);
+      if (uri === undefined) {
+        this.showTransientStatus('已取消重新导入，资料记录和证据卡保持不变');
+        return;
+      }
+      this.statusMessage = `正在校验“${record.title}”…`;
+      await this.importService.copyPdfToPath(uri, record.source);
+      const validationController = new pdfViewManager.PdfController();
+      let validationResult: pdfService.ParseResult;
+      try {
+        validationResult = await validationController.loadDocument(record.source);
+      } catch (error) {
+        await this.importService.removeImportedPdf(record.source);
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'Restored PDF parse failed: %{public}s', JSON.stringify(error));
+        this.statusMessage = '重新导入失败，所选 PDF 无法读取';
+        return;
+      }
+      if (validationResult !== pdfService.ParseResult.PARSE_SUCCESS) {
+        validationController.releaseDocument();
+        await this.importService.removeImportedPdf(record.source);
+        this.statusMessage = this.parseErrorMessage(validationResult);
+        return;
+      }
+      const actualPageCount = validationController.getPageCount();
+      validationController.releaseDocument();
+      if (record.pageCount > 0 && actualPageCount !== record.pageCount) {
+        await this.importService.removeImportedPdf(record.source);
+        this.statusMessage =
+          `所选 PDF 为 ${actualPageCount} 页，与原资料 ${record.pageCount} 页不一致，请选择原文件`;
+        return;
+      }
+      replacementValidated = true;
+      const restoredPage = Math.min(Math.max(0, record.currentPage), Math.max(0, actualPageCount - 1));
+      await this.libraryRepository.updatePdfMetadata(record.id, actualPageCount, restoredPage);
+      this.updateLocalDocument(record.id, restoredPage, actualPageCount);
+      await this.flushReadPositionBeforeDocumentChange();
+      if (this.documentPath.length > 0) {
+        this.pdfController.releaseDocument();
+        this.documentPath = '';
+      }
+      const result = await this.pdfController.loadDocument(record.source, undefined, restoredPage);
+      if (result !== pdfService.ParseResult.PARSE_SUCCESS) {
+        this.documentPath = '';
+        this.statusMessage = '本地副本已恢复，但暂时无法打开，请稍后重试';
+        return;
+      }
+      record.pageCount = actualPageCount;
+      record.currentPage = restoredPage;
+      this.activateLoadedPdf(record);
+      const evidenceCount = this.evidenceCountForDocument(record.id);
+      this.showTransientStatus(
+        `已修复 ${record.title}，保留第 ${restoredPage + 1} 页进度和 ${evidenceCount} 张证据卡`
+      );
+    } catch (error) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'Missing PDF restore failed: %{public}s', JSON.stringify(error));
+      if (!replacementValidated && this.importService.fileExists(record.source)) {
+        await this.importService.removeImportedPdf(record.source);
+      }
+      this.statusMessage = replacementValidated ?
+        '本地副本已恢复，但资料状态暂时无法更新，请重新打开' :
+        '重新导入失败，资料记录和证据卡未受影响';
     } finally {
       this.isLoading = false;
     }
@@ -1223,7 +1334,7 @@ struct Index {
   private documentRenderKey(document: DocumentRecord): string {
     return `${document.id}:${document.lastReadAt}:${document.currentPage}:${document.favorite ? 1 : 0}:` +
       `${document.pageCount}:${document.title}:${document.tags}:${this.evidenceCountForDocument(document.id)}:` +
-      `${this.pendingCountForDocument(document.id)}`;
+      `${this.pendingCountForDocument(document.id)}:${this.isPdfMissing(document) ? 1 : 0}`;
   }
 
   private evidenceRenderKey(card: EvidenceCard): string {
@@ -1233,7 +1344,8 @@ struct Index {
 
   private recentPdfDocument(): DocumentRecord | undefined {
     return this.documents
-      .filter((document: DocumentRecord): boolean => document.kind === 'PDF')
+      .filter((document: DocumentRecord): boolean =>
+        document.kind === 'PDF' && !this.isPdfMissing(document))
       .sort((left: DocumentRecord, right: DocumentRecord): number => right.lastReadAt - left.lastReadAt)[0];
   }
 
@@ -2719,16 +2831,20 @@ struct Index {
     Column({ space: 12 }) {
       Row({ space: 14 }) {
         Column() {
-          Text(document.kind === 'PDF' ? 'PDF' : 'WEB')
+          Text(this.isPdfMissing(document) ? '待修复' : document.kind === 'PDF' ? 'PDF' : 'WEB')
             .fontSize(11)
             .fontWeight(FontWeight.Bold)
-            .fontColor(document.kind === 'PDF' ? this.accentColor() : this.coralColor());
+            .fontColor(
+              this.isPdfMissing(document) || document.kind === 'WEB' ? this.coralColor() : this.accentColor()
+            );
         }
         .width(48)
         .height(52)
         .justifyContent(FlexAlign.Center)
         .borderRadius(6)
-        .backgroundColor(document.kind === 'PDF' ? this.accentSoft() : this.coralSoft());
+        .backgroundColor(
+          this.isPdfMissing(document) || document.kind === 'WEB' ? this.coralSoft() : this.accentSoft()
+        );
         Column({ space: 5 }) {
           Text(document.title)
             .fontSize(15)
@@ -2737,11 +2853,13 @@ struct Index {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .width('100%');
-          Text(document.kind === 'PDF' ?
+          Text(this.isPdfMissing(document) ?
+            `本地副本丢失 · ${document.pageCount} 页 · 进度与证据仍已保留` :
+            document.kind === 'PDF' ?
             `${document.pageCount} 页 · 上次读到第 ${document.currentPage + 1} 页 · ${this.formatDate(document.lastReadAt)}` :
             `${document.source} · ${this.formatDate(document.lastReadAt)}`)
             .fontSize(11)
-            .fontColor(this.secondaryText())
+            .fontColor(this.isPdfMissing(document) ? this.coralColor() : this.secondaryText())
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .width('100%');
@@ -2767,7 +2885,7 @@ struct Index {
         .alignItems(HorizontalAlign.End);
       }
       .width('100%');
-      if (document.kind === 'PDF') {
+      if (document.kind === 'PDF' && !this.isPdfMissing(document)) {
         Row({ space: 10 }) {
           Progress({ value: this.documentProgress(document), total: 100, type: ProgressType.Linear })
             .height(4)
@@ -2798,7 +2916,8 @@ struct Index {
         Blank();
         this.AccentButton(
           (): string => document.kind === 'PDF' ?
-            (document.currentPage > 0 ? '继续阅读' : '开始阅读') : '打开来源',
+            (this.isPdfMissing(document) ? '重新导入' :
+              (document.currentPage > 0 ? '继续阅读' : '开始阅读')) : '打开来源',
           (): void => {
             this.openDocument(document);
           }
