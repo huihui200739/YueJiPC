@@ -2485,16 +2485,22 @@ struct Index {
       this.NavButton('复习中心', (): boolean => this.mainView === 'REVIEW', (): void => {
         this.showReview();
       }, (): boolean => !this.reviewSessionSourceOpen);
-      if (this.windowWidth < 760) {
+      if (this.windowWidth < 900) {
         Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
-        Text('添加资料')
+        Text('快捷操作')
           .fontSize(11)
           .fontColor(this.mutedText())
           .width('100%');
-        this.NavButton('网页资料', (): boolean => false, (): void => {
+        if (this.windowWidth < 760) {
+          this.NavButton('添加网页资料', (): boolean => false, (): void => {
+            this.closeCompactNavigation();
+            this.startAddWeb();
+          }, (): boolean => this.isReady && !this.reviewSessionSourceOpen);
+        }
+        this.NavButton('导出学习笔记', (): boolean => false, (): void => {
           this.closeCompactNavigation();
-          this.startAddWeb();
-        }, (): boolean => !this.reviewSessionSourceOpen);
+          this.exportCurrentView();
+        }, (): boolean => this.documents.length > 0 && !this.reviewSessionSourceOpen);
       }
       Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
       if (this.mainView === 'READER' && this.documentPath.length > 0) {
