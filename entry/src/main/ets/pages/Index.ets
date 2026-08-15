@@ -90,6 +90,7 @@ struct Index {
   @State private deleteTargetKind: DeleteTargetKind = 'NONE';
   @State private deleteTargetId: string = '';
   @State private isDeleting: boolean = false;
+  @State private isSavingEvidence: boolean = false;
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
@@ -115,11 +116,7 @@ struct Index {
       this.zoomPercent = Math.round(scale * 100);
     });
     this.pdfController.registerTextSelectedListener((selection: pdfViewManager.TextSelectedParam): void => {
-      this.selectedText = selection.text;
-      this.selectedRects = selection.pdfRect;
-      if (selection.text.trim().length > 0 && selection.pdfRect.length > 0) {
-        this.statusMessage = `已选择第 ${selection.pdfRect[0].pageIndex + 1} 页文字，可创建证据卡`;
-      }
+      this.handleTextSelection(selection);
     });
     this.initializeApp();
   }
@@ -137,6 +134,56 @@ struct Index {
       return undefined;
     }
     return context as common.UIAbilityContext;
+  }
+
+  private handleTextSelection(selection: pdfViewManager.TextSelectedParam): void {
+    const selectedText = selection.text.trim();
+    if (this.isSavingEvidence || selectedText.length === 0 || selection.pdfRect.length === 0) {
+      return;
+    }
+    const sourceChanged = this.selectedText.trim().length > 0 && this.selectedText.trim() !== selectedText;
+    const hasDraftContent = this.evidenceNote.trim().length > 0 || this.evidenceTags.trim().length > 0;
+    const layoutChanged = !this.rightSidebarOpen || this.leftSidebarOpen || this.focusMode;
+    this.selectedText = selection.text;
+    this.selectedRects = selection.pdfRect;
+    this.rightSidebarOpen = true;
+    this.focusMode = false;
+    if (this.windowWidth < 1100) {
+      this.leftSidebarOpen = false;
+    }
+    if (layoutChanged) {
+      this.saveSettings();
+    }
+    if (sourceChanged && hasDraftContent) {
+      this.statusMessage = `选区已更新为第 ${selection.pdfRect[0].pageIndex + 1} 页，笔记和标签草稿已保留`;
+      return;
+    }
+    this.statusMessage = `已选择第 ${selection.pdfRect[0].pageIndex + 1} 页文字，可创建证据卡`;
+  }
+
+  private resetEvidenceDraft(): void {
+    this.selectedText = '';
+    this.selectedRects = [];
+    this.evidenceNote = '';
+    this.evidenceTags = '';
+  }
+
+  private cancelEvidenceDraft(): void {
+    if (this.isSavingEvidence) {
+      return;
+    }
+    this.resetEvidenceDraft();
+    this.statusMessage = '已取消本次证据卡';
+  }
+
+  private selectedSourceLabel(): string {
+    if (this.selectedRects.length === 0) {
+      return '';
+    }
+    const firstPage = this.selectedRects[0].pageIndex + 1;
+    const lastPage = this.selectedRects[this.selectedRects.length - 1].pageIndex + 1;
+    const pageLabel = firstPage === lastPage ? `第 ${firstPage} 页` : `第 ${firstPage}-${lastPage} 页`;
+    return `${pageLabel} · 已选 ${this.selectedText.trim().length} 字`;
   }
 
   private async initializeApp(): Promise<void> {
@@ -304,10 +351,7 @@ struct Index {
     this.searchCount = 0;
     this.searchIndex = 0;
     this.searchGeneration++;
-    this.selectedText = '';
-    this.selectedRects = [];
-    this.evidenceNote = '';
-    this.evidenceTags = '';
+    this.resetEvidenceDraft();
     this.editingEvidenceId = '';
     this.mainView = 'READER';
     this.pdfController.setMaxZoom(4);
@@ -436,38 +480,45 @@ struct Index {
   }
 
   private async createEvidenceCard(): Promise<void> {
+    if (this.isSavingEvidence) {
+      return;
+    }
     if (this.activeDocumentId.length === 0 || this.selectedText.trim().length === 0 || this.selectedRects.length === 0) {
       this.statusMessage = '请先在 PDF 中选择一段文字';
       return;
     }
+    const documentId = this.activeDocumentId;
+    const selectedText = this.selectedText.trim();
+    const selectedRects = this.selectedRects;
+    const note = this.evidenceNote.trim();
+    const tags = normalizeTags(this.evidenceTags);
     const now = Date.now();
     const card: EvidenceCard = {
       id: createId('evidence'),
-      documentId: this.activeDocumentId,
-      quote: this.selectedText.trim(),
-      pageIndex: this.selectedRects[0].pageIndex,
-      rectsJson: this.serializeSelection(this.selectedRects),
-      note: this.evidenceNote.trim(),
+      documentId: documentId,
+      quote: selectedText,
+      pageIndex: selectedRects[0].pageIndex,
+      rectsJson: this.serializeSelection(selectedRects),
+      note: note,
       kind: this.evidenceKind,
       color: this.evidenceColor,
-      tags: normalizeTags(this.evidenceTags),
+      tags: tags,
       reviewStatus: 'TO_REVIEW',
       createdAt: now,
       updatedAt: now
     };
     let databaseInserted = false;
+    this.isSavingEvidence = true;
+    this.statusMessage = '正在保存证据卡…';
     try {
       await this.evidenceRepository.insert(card);
       databaseInserted = true;
       const type = card.kind === 'UNDERLINE' ?
         pdfViewManager.SupportedAnnotationType.UNDERLINE :
         pdfViewManager.SupportedAnnotationType.HIGHLIGHT;
-      this.pdfController.addMarkupAnnotation(type, this.selectedRects, card.color);
+      this.pdfController.addMarkupAnnotation(type, selectedRects, card.color);
       this.evidenceCards = await this.evidenceRepository.listAll();
-      this.selectedText = '';
-      this.selectedRects = [];
-      this.evidenceNote = '';
-      this.evidenceTags = '';
+      this.resetEvidenceDraft();
       this.statusMessage = `证据卡已保存：${this.documentTitle(card.documentId)}，第 ${card.pageIndex + 1} 页`;
     } catch (error) {
       if (databaseInserted) {
@@ -480,6 +531,8 @@ struct Index {
         }
       }
       this.statusMessage = '证据卡保存失败，请检查本地存储空间';
+    } finally {
+      this.isSavingEvidence = false;
     }
   }
 
@@ -1297,6 +1350,10 @@ struct Index {
           this.editingEvidenceId = '';
           return true;
         }
+        if (this.selectedText.trim().length > 0 && !this.isSavingEvidence) {
+          this.cancelEvidenceDraft();
+          return true;
+        }
       }
       return false;
     }
@@ -2105,10 +2162,19 @@ struct Index {
   private EvidenceComposer(): void {
     if (this.selectedText.trim().length > 0) {
       Column({ space: 9 }) {
-        Text('新证据')
-          .fontSize(11)
-          .fontColor(this.mutedText())
-          .width('100%');
+        Row({ space: 8 }) {
+          Text('新证据')
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.primaryText());
+          Blank();
+          Text(this.selectedSourceLabel())
+            .fontSize(10)
+            .fontColor(this.mutedText())
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis });
+        }
+        .width('100%');
         Text(this.selectedText)
           .fontSize(13)
           .fontColor(this.highlightPreviewText())
@@ -2189,9 +2255,16 @@ struct Index {
           .onChange((value: string): void => {
             this.evidenceTags = value;
           });
-        this.AccentButton((): string => '创建证据卡', (): void => {
-          this.createEvidenceCard();
-        });
+        Row({ space: 8 }) {
+          this.ToolButton((): string => '取消选区', (): void => {
+            this.cancelEvidenceDraft();
+          }, (): boolean => !this.isSavingEvidence);
+          Blank();
+          this.AccentButton((): string => this.isSavingEvidence ? '正在保存…' : '创建证据卡', (): void => {
+            this.createEvidenceCard();
+          }, (): boolean => !this.isSavingEvidence);
+        }
+        .width('100%');
       }
       .width('100%')
       .padding({ bottom: 12 })
