@@ -28,6 +28,17 @@ import { SettingsService } from '../services/SettingsService';
 type LibraryScope = 'ALL' | 'RECENT' | 'FAVORITE';
 type ReviewFilter = 'ALL' | 'TO_REVIEW' | 'MASTERED';
 type DeleteTargetKind = 'NONE' | 'DOCUMENT' | 'EVIDENCE';
+type EditorDraftKind = 'NONE' | 'WEB' | 'PDF' | 'EVIDENCE';
+type EditorDraftAction =
+  'NONE' |
+  'CLOSE' |
+  'EDIT_EVIDENCE' |
+  'DELETE_EVIDENCE' |
+  'OPEN_DOCUMENT' |
+  'IMPORT_PDF' |
+  'IMPORT_DROPPED_PDF' |
+  'DELETE_DOCUMENT' |
+  'RETURN_TO_EVIDENCE';
 type EvidenceDraftAction =
   'NONE' |
   'OPEN_DOCUMENT' |
@@ -98,6 +109,11 @@ struct Index {
   @State private deleteTargetId: string = '';
   @State private isDeleting: boolean = false;
   @State private isSavingEvidence: boolean = false;
+  @State private isSavingEditor: boolean = false;
+  @State private editorDraftKind: EditorDraftKind = 'NONE';
+  @State private editorDraftAction: EditorDraftAction = 'NONE';
+  @State private editorDraftTargetId: string = '';
+  @State private editorDraftUri: string = '';
   @State private evidenceDraftAction: EvidenceDraftAction = 'NONE';
   @State private evidenceDraftTargetId: string = '';
   @State private evidenceDraftUri: string = '';
@@ -248,6 +264,204 @@ struct Index {
     this.statusMessage = '目标内容已不存在，证据卡草稿已放弃';
   }
 
+  private hasWebEditorDraft(): boolean {
+    if (!this.showWebEditor) {
+      return false;
+    }
+    if (this.editingWebId.length === 0) {
+      return this.webTitle.length > 0 ||
+        this.webUrl.length > 0 ||
+        this.webExcerpt.length > 0 ||
+        this.webNote.length > 0 ||
+        this.webTags.length > 0;
+    }
+    const document = this.documentById(this.editingWebId);
+    if (document === undefined) {
+      return true;
+    }
+    return this.webTitle !== document.title ||
+      this.webUrl !== document.source ||
+      this.webExcerpt !== document.excerpt ||
+      this.webNote !== document.note ||
+      this.webTags !== document.tags;
+  }
+
+  private hasPdfEditorDraft(): boolean {
+    if (!this.showPdfEditor) {
+      return false;
+    }
+    const document = this.documentById(this.editingPdfId);
+    if (document === undefined) {
+      return true;
+    }
+    return this.pdfTitle !== document.title || this.pdfTags !== document.tags;
+  }
+
+  private hasEvidenceEditorDraft(): boolean {
+    if (this.editingEvidenceId.length === 0) {
+      return false;
+    }
+    const card = this.evidenceCards.find((item: EvidenceCard): boolean => item.id === this.editingEvidenceId);
+    if (card === undefined) {
+      return true;
+    }
+    return this.editingEvidenceNote !== card.note || this.editingEvidenceTags !== card.tags;
+  }
+
+  private hasEditorDraft(kind: EditorDraftKind): boolean {
+    if (kind === 'WEB') {
+      return this.hasWebEditorDraft();
+    }
+    if (kind === 'PDF') {
+      return this.hasPdfEditorDraft();
+    }
+    if (kind === 'EVIDENCE') {
+      return this.hasEvidenceEditorDraft();
+    }
+    return false;
+  }
+
+  private closeEditor(kind: EditorDraftKind): void {
+    if (kind === 'WEB') {
+      this.showWebEditor = false;
+      this.editingWebId = '';
+      this.webTitle = '';
+      this.webUrl = '';
+      this.webExcerpt = '';
+      this.webNote = '';
+      this.webTags = '';
+    } else if (kind === 'PDF') {
+      this.showPdfEditor = false;
+      this.editingPdfId = '';
+      this.pdfTitle = '';
+      this.pdfTags = '';
+    } else if (kind === 'EVIDENCE') {
+      this.editingEvidenceId = '';
+      this.editingEvidenceNote = '';
+      this.editingEvidenceTags = '';
+    }
+  }
+
+  private requestEditorDraftDiscard(
+    kind: EditorDraftKind,
+    action: EditorDraftAction = 'CLOSE',
+    targetId: string = '',
+    uri: string = ''
+  ): boolean {
+    if (this.isSavingEditor) {
+      return true;
+    }
+    if (!this.hasEditorDraft(kind)) {
+      return false;
+    }
+    this.editorDraftKind = kind;
+    this.editorDraftAction = action;
+    this.editorDraftTargetId = targetId;
+    this.editorDraftUri = uri;
+    this.statusMessage = '当前编辑内容尚未保存';
+    return true;
+  }
+
+  private requestCloseEditor(kind: EditorDraftKind): void {
+    if (this.isSavingEditor || this.requestEditorDraftDiscard(kind)) {
+      return;
+    }
+    this.closeEditor(kind);
+  }
+
+  private cancelEditorDraftDiscard(): void {
+    this.editorDraftKind = 'NONE';
+    this.editorDraftAction = 'NONE';
+    this.editorDraftTargetId = '';
+    this.editorDraftUri = '';
+    this.statusMessage = '已保留当前编辑内容';
+  }
+
+  private async discardEditorDraftAndContinue(): Promise<void> {
+    const kind = this.editorDraftKind;
+    const action = this.editorDraftAction;
+    const targetId = this.editorDraftTargetId;
+    const uri = this.editorDraftUri;
+    this.editorDraftKind = 'NONE';
+    this.editorDraftAction = 'NONE';
+    this.editorDraftTargetId = '';
+    this.editorDraftUri = '';
+    this.closeEditor(kind);
+    if (action === 'EDIT_EVIDENCE') {
+      const card = this.evidenceCards.find((item: EvidenceCard): boolean => item.id === targetId);
+      if (card !== undefined) {
+        this.startEditEvidence(card);
+        return;
+      }
+    } else if (action === 'DELETE_EVIDENCE') {
+      const card = this.evidenceCards.find((item: EvidenceCard): boolean => item.id === targetId);
+      if (card !== undefined) {
+        this.requestDeleteEvidence(card);
+        return;
+      }
+    } else if (action === 'OPEN_DOCUMENT') {
+      const document = this.documentById(targetId);
+      if (document !== undefined) {
+        await this.openDocument(document);
+        return;
+      }
+    } else if (action === 'IMPORT_PDF') {
+      await this.importPdf();
+      return;
+    } else if (action === 'IMPORT_DROPPED_PDF') {
+      await this.importPdfFromUri(uri);
+      return;
+    } else if (action === 'DELETE_DOCUMENT') {
+      const document = this.documentById(targetId);
+      if (document !== undefined) {
+        this.requestDeleteDocument(document);
+        return;
+      }
+    } else if (action === 'RETURN_TO_EVIDENCE') {
+      const card = this.evidenceCards.find((item: EvidenceCard): boolean => item.id === targetId);
+      if (card !== undefined) {
+        await this.returnToEvidence(card);
+        return;
+      }
+    } else if (action === 'CLOSE') {
+      this.statusMessage = '已放弃未保存的修改';
+      return;
+    }
+    this.statusMessage = '目标内容已不存在，未保存的修改已放弃';
+  }
+
+  private editorDraftTitle(): string {
+    if (this.editorDraftKind === 'WEB') {
+      return this.editingWebId.length === 0 ? '放弃新网页资料？' : '放弃网页资料修改？';
+    }
+    if (this.editorDraftKind === 'PDF') {
+      return '放弃 PDF 资料修改？';
+    }
+    return '放弃证据卡修改？';
+  }
+
+  private editorDraftTarget(): string {
+    if (this.editorDraftKind === 'WEB') {
+      return this.webTitle.trim().length > 0 ? this.webTitle.trim() :
+        (this.webUrl.trim().length > 0 ? this.webUrl.trim() : '尚未命名的网页资料');
+    }
+    if (this.editorDraftKind === 'PDF') {
+      return this.pdfTitle.trim().length > 0 ? this.pdfTitle.trim() : '未命名 PDF';
+    }
+    const card = this.evidenceCards.find((item: EvidenceCard): boolean => item.id === this.editingEvidenceId);
+    return card === undefined ? '目标证据卡已不存在' : card.quote;
+  }
+
+  private editorDraftMessage(): string {
+    if (this.editorDraftKind === 'WEB') {
+      return '标题、网址、摘录、笔记或标签中的修改尚未保存。';
+    }
+    if (this.editorDraftKind === 'PDF') {
+      return '资料标题或标签中的修改尚未保存。';
+    }
+    return '证据卡的笔记或标签修改尚未保存。';
+  }
+
   private selectedSourceLabel(): string {
     if (this.selectedRects.length === 0) {
       return '';
@@ -344,6 +558,12 @@ struct Index {
   }
 
   private async importPdf(): Promise<void> {
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'IMPORT_PDF')) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
     if (this.requestEvidenceDraftDiscard('IMPORT_PDF')) {
       return;
     }
@@ -368,6 +588,12 @@ struct Index {
   }
 
   private async importPdfFromUri(uri: string): Promise<void> {
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'IMPORT_DROPPED_PDF', '', uri)) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
     if (this.requestEvidenceDraftDiscard('IMPORT_DROPPED_PDF', '', uri)) {
       return;
     }
@@ -443,6 +669,12 @@ struct Index {
     if (record.kind === 'WEB') {
       await this.openWebSource(record);
       return;
+    }
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'OPEN_DOCUMENT', record.id)) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
     }
     if (this.isLoading) {
       return;
@@ -618,24 +850,42 @@ struct Index {
   }
 
   private startEditEvidence(card: EvidenceCard): void {
+    if (this.editingEvidenceId === card.id) {
+      return;
+    }
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'EDIT_EVIDENCE', card.id)) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
     this.editingEvidenceId = card.id;
     this.editingEvidenceNote = card.note;
     this.editingEvidenceTags = card.tags;
   }
 
   private async saveEvidenceEdit(card: EvidenceCard): Promise<void> {
+    if (this.isSavingEditor) {
+      return;
+    }
+    const note = this.editingEvidenceNote.trim();
+    const tags = normalizeTags(this.editingEvidenceTags);
+    this.isSavingEditor = true;
+    this.statusMessage = '正在保存证据卡修改…';
     try {
       await this.evidenceRepository.updateCard(
         card.id,
-        this.editingEvidenceNote.trim(),
-        normalizeTags(this.editingEvidenceTags),
+        note,
+        tags,
         card.reviewStatus
       );
       this.evidenceCards = await this.evidenceRepository.listAll();
-      this.editingEvidenceId = '';
+      this.closeEditor('EVIDENCE');
       this.statusMessage = '证据卡修改已保存';
     } catch (error) {
       this.statusMessage = '证据卡修改保存失败';
+    } finally {
+      this.isSavingEditor = false;
     }
   }
 
@@ -681,6 +931,12 @@ struct Index {
     if (document === undefined) {
       this.statusMessage = '原始资料已删除，证据内容仍保留';
       return;
+    }
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'RETURN_TO_EVIDENCE', card.id)) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
     }
     if (this.requestEvidenceDraftDiscard('RETURN_TO_EVIDENCE', card.id)) {
       return;
@@ -956,6 +1212,12 @@ struct Index {
   }
 
   private requestDeleteDocument(document: DocumentRecord): void {
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'DELETE_DOCUMENT', document.id)) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
     if (document.id === this.activeDocumentId &&
       this.requestEvidenceDraftDiscard('DELETE_DOCUMENT', document.id)) {
       return;
@@ -967,7 +1229,12 @@ struct Index {
   }
 
   private requestDeleteEvidence(card: EvidenceCard): void {
-    this.editingEvidenceId = '';
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'DELETE_EVIDENCE', card.id)) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
     this.deleteTargetKind = 'EVIDENCE';
     this.deleteTargetId = card.id;
   }
@@ -1074,26 +1341,37 @@ struct Index {
   }
 
   private async savePdfDocument(): Promise<void> {
+    if (this.isSavingEditor) {
+      return;
+    }
     const title = this.pdfTitle.trim();
     if (title.length === 0) {
       this.statusMessage = '资料标题不能为空';
       return;
     }
+    const tags = normalizeTags(this.pdfTags);
+    this.isSavingEditor = true;
+    this.statusMessage = '正在保存 PDF 资料信息…';
     try {
       await this.libraryRepository.updatePdfDetails(
         this.editingPdfId,
         title,
-        normalizeTags(this.pdfTags)
+        tags
       );
       await this.reloadData();
-      this.showPdfEditor = false;
+      this.closeEditor('PDF');
       this.statusMessage = 'PDF 资料信息已更新';
     } catch (error) {
       this.statusMessage = 'PDF 资料信息保存失败';
+    } finally {
+      this.isSavingEditor = false;
     }
   }
 
   private async saveWebDocument(): Promise<void> {
+    if (this.isSavingEditor) {
+      return;
+    }
     if (!this.linkService.isValidUrl(this.webUrl)) {
       this.statusMessage = '网址无效，请输入完整域名，例如 https://example.com';
       return;
@@ -1105,12 +1383,16 @@ struct Index {
       note: this.webNote,
       tags: this.webTags
     };
+    const isNewDocument = this.editingWebId.length === 0;
+    const editingWebId = this.editingWebId;
+    this.isSavingEditor = true;
+    this.statusMessage = '正在保存网页资料卡…';
     try {
-      if (this.editingWebId.length === 0) {
+      if (isNewDocument) {
         await this.libraryRepository.insert(this.linkService.createDocument(draft));
       } else {
         await this.libraryRepository.updateWebDetails(
-          this.editingWebId,
+          editingWebId,
           draft.title.trim().length > 0 ? draft.title.trim() : this.linkService.normalizeUrl(draft.url),
           this.linkService.normalizeUrl(draft.url),
           draft.excerpt.trim(),
@@ -1119,10 +1401,12 @@ struct Index {
         );
       }
       await this.reloadData();
-      this.showWebEditor = false;
-      this.statusMessage = this.editingWebId.length === 0 ? '网页资料卡已保存' : '网页资料卡已更新';
+      this.closeEditor('WEB');
+      this.statusMessage = isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新';
     } catch (error) {
       this.statusMessage = '网页资料卡保存失败';
+    } finally {
+      this.isSavingEditor = false;
     }
   }
 
@@ -1422,6 +1706,10 @@ struct Index {
     const modifier = controlPressed || event.metaKey === 1;
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+        if (this.editorDraftAction !== 'NONE') {
+          this.cancelEditorDraftDiscard();
+          return true;
+        }
         if (this.evidenceDraftAction !== 'NONE') {
           this.cancelEvidenceDraftDiscard();
           return true;
@@ -1431,15 +1719,15 @@ struct Index {
           return true;
         }
         if (this.showWebEditor) {
-          this.showWebEditor = false;
+          this.requestCloseEditor('WEB');
           return true;
         }
         if (this.showPdfEditor) {
-          this.showPdfEditor = false;
+          this.requestCloseEditor('PDF');
           return true;
         }
         if (this.editingEvidenceId.length > 0) {
-          this.editingEvidenceId = '';
+          this.requestCloseEditor('EVIDENCE');
           return true;
         }
         if (this.selectedText.trim().length > 0 && !this.isSavingEvidence) {
@@ -1449,10 +1737,12 @@ struct Index {
       }
       return false;
     }
-    if (this.evidenceDraftAction !== 'NONE' ||
+    if (this.editorDraftAction !== 'NONE' ||
+      this.evidenceDraftAction !== 'NONE' ||
       this.deleteTargetKind !== 'NONE' ||
       this.showWebEditor ||
-      this.showPdfEditor) {
+      this.showPdfEditor ||
+      this.editingEvidenceId.length > 0) {
       return true;
     }
     if (event.keyCode === KeyCode.KEYCODE_O) {
@@ -2425,6 +2715,7 @@ struct Index {
           .backgroundColor(this.raisedBackground())
           .border({ width: 1, color: this.dividerColor() })
           .borderRadius(6)
+          .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.editingEvidenceNote = value;
           });
@@ -2436,16 +2727,21 @@ struct Index {
           .backgroundColor(this.raisedBackground())
           .border({ width: 1, color: this.dividerColor() })
           .borderRadius(6)
+          .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.editingEvidenceTags = value;
           });
         Row({ space: 7 }) {
-          this.AccentButton((): string => '保存', (): void => {
-            this.saveEvidenceEdit(card);
-          });
+          this.AccentButton(
+            (): string => this.isSavingEditor ? '正在保存…' : '保存',
+            (): void => {
+              this.saveEvidenceEdit(card);
+            },
+            (): boolean => !this.isSavingEditor
+          );
           this.ToolButton((): string => '取消', (): void => {
-            this.editingEvidenceId = '';
-          });
+            this.requestCloseEditor('EVIDENCE');
+          }, (): boolean => !this.isSavingEditor);
         }
       } else {
         if (card.note.length > 0) {
@@ -2663,7 +2959,7 @@ struct Index {
         .height('100%')
         .backgroundColor(this.scrimColor())
         .onClick((): void => {
-          this.showWebEditor = false;
+          this.requestCloseEditor('WEB');
         });
       Column({ space: 12 }) {
         Row() {
@@ -2673,8 +2969,8 @@ struct Index {
             .fontColor(this.primaryText());
           Blank();
           this.ToolButton((): string => '关闭', (): void => {
-            this.showWebEditor = false;
-          });
+            this.requestCloseEditor('WEB');
+          }, (): boolean => !this.isSavingEditor);
         }
         .width('100%');
         Scroll() {
@@ -2687,6 +2983,7 @@ struct Index {
               .backgroundColor(this.raisedBackground())
               .border({ width: 1, color: this.dividerColor() })
               .borderRadius(6)
+              .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webTitle = value;
               });
@@ -2698,6 +2995,7 @@ struct Index {
               .backgroundColor(this.raisedBackground())
               .border({ width: 1, color: this.dividerColor() })
               .borderRadius(6)
+              .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webUrl = value;
               });
@@ -2709,6 +3007,7 @@ struct Index {
               .backgroundColor(this.raisedBackground())
               .border({ width: 1, color: this.dividerColor() })
               .borderRadius(6)
+              .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webExcerpt = value;
               });
@@ -2720,6 +3019,7 @@ struct Index {
               .backgroundColor(this.raisedBackground())
               .border({ width: 1, color: this.dividerColor() })
               .borderRadius(6)
+              .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webNote = value;
               });
@@ -2731,6 +3031,7 @@ struct Index {
               .backgroundColor(this.raisedBackground())
               .border({ width: 1, color: this.dividerColor() })
               .borderRadius(6)
+              .enabled(!this.isSavingEditor)
               .onChange((value: string): void => {
                 this.webTags = value;
               });
@@ -2747,15 +3048,19 @@ struct Index {
               if (document !== undefined) {
                 this.openWebSource(document);
               }
-            });
+            }, (): boolean => !this.isSavingEditor);
           }
           Blank();
           this.ToolButton((): string => '取消', (): void => {
-            this.showWebEditor = false;
-          });
-          this.AccentButton((): string => '保存资料卡', (): void => {
-            this.saveWebDocument();
-          });
+            this.requestCloseEditor('WEB');
+          }, (): boolean => !this.isSavingEditor);
+          this.AccentButton(
+            (): string => this.isSavingEditor ? '正在保存…' : '保存资料卡',
+            (): void => {
+              this.saveWebDocument();
+            },
+            (): boolean => !this.isSavingEditor
+          );
         }
         .width('100%');
       }
@@ -2778,7 +3083,7 @@ struct Index {
         .height('100%')
         .backgroundColor(this.scrimColor())
         .onClick((): void => {
-          this.showPdfEditor = false;
+          this.requestCloseEditor('PDF');
         });
       Column({ space: 12 }) {
         Row() {
@@ -2788,8 +3093,8 @@ struct Index {
             .fontColor(this.primaryText());
           Blank();
           this.ToolButton((): string => '关闭', (): void => {
-            this.showPdfEditor = false;
-          });
+            this.requestCloseEditor('PDF');
+          }, (): boolean => !this.isSavingEditor);
         }
         .width('100%');
         TextInput({ placeholder: '资料标题', text: this.pdfTitle })
@@ -2800,6 +3105,7 @@ struct Index {
           .backgroundColor(this.raisedBackground())
           .border({ width: 1, color: this.dividerColor() })
           .borderRadius(6)
+          .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.pdfTitle = value;
           });
@@ -2811,17 +3117,77 @@ struct Index {
           .backgroundColor(this.raisedBackground())
           .border({ width: 1, color: this.dividerColor() })
           .borderRadius(6)
+          .enabled(!this.isSavingEditor)
           .onChange((value: string): void => {
             this.pdfTags = value;
           });
         Row({ space: 9 }) {
           Blank();
           this.ToolButton((): string => '取消', (): void => {
-            this.showPdfEditor = false;
+            this.requestCloseEditor('PDF');
+          }, (): boolean => !this.isSavingEditor);
+          this.AccentButton(
+            (): string => this.isSavingEditor ? '正在保存…' : '保存资料',
+            (): void => {
+              this.savePdfDocument();
+            },
+            (): boolean => !this.isSavingEditor
+          );
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(480))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private EditorDraftDiscardOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.cancelEditorDraftDiscard();
+        });
+      Column({ space: 14 }) {
+        Text(this.editorDraftTitle())
+          .fontSize(19)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.primaryText())
+          .width('100%');
+        Text(this.editorDraftTarget())
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryText())
+          .lineHeight(20)
+          .maxLines(3)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .padding({ left: 10 })
+          .border({ width: { left: 3 }, color: this.coralColor() });
+        Text(this.editorDraftMessage())
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .lineHeight(19)
+          .width('100%');
+        Row({ space: 9 }) {
+          Blank();
+          this.ToolButton((): string => '继续编辑', (): void => {
+            this.cancelEditorDraftDiscard();
           });
-          this.AccentButton((): string => '保存资料', (): void => {
-            this.savePdfDocument();
-          });
+          this.DangerFilledButton(
+            (): string => '放弃并继续',
+            (): void => {
+              this.discardEditorDraftAndContinue();
+            }
+          );
         }
         .width('100%');
       }
@@ -3042,9 +3408,6 @@ struct Index {
       .width('100%')
       .height('100%')
       .backgroundColor(this.pageBackground())
-      .focusable(true)
-      .defaultFocus(true)
-      .onKeyEvent((event: KeyEvent): boolean => this.handleShortcut(event))
       .allowDrop(['general.file-uri', 'com.adobe.pdf'])
       .onDragEnter((): void => {
         if (this.isReady && !this.isLoading) {
@@ -3085,6 +3448,9 @@ struct Index {
       if (this.showPdfEditor) {
         this.PdfEditorOverlay();
       }
+      if (this.editorDraftAction !== 'NONE') {
+        this.EditorDraftDiscardOverlay();
+      }
       if (this.evidenceDraftAction !== 'NONE') {
         this.EvidenceDraftDiscardOverlay();
       }
@@ -3093,6 +3459,9 @@ struct Index {
       }
     }
     .width('100%')
-    .height('100%');
+    .height('100%')
+    .focusable(true)
+    .defaultFocus(true)
+    .onKeyEvent((event: KeyEvent): boolean => this.handleShortcut(event));
   }
 }
