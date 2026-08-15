@@ -28,6 +28,13 @@ import { SettingsService } from '../services/SettingsService';
 type LibraryScope = 'ALL' | 'RECENT' | 'FAVORITE';
 type ReviewFilter = 'ALL' | 'TO_REVIEW' | 'MASTERED';
 type DeleteTargetKind = 'NONE' | 'DOCUMENT' | 'EVIDENCE';
+type EvidenceDraftAction =
+  'NONE' |
+  'OPEN_DOCUMENT' |
+  'IMPORT_PDF' |
+  'IMPORT_DROPPED_PDF' |
+  'DELETE_DOCUMENT' |
+  'RETURN_TO_EVIDENCE';
 
 interface ThumbnailRecord {
   pageIndex: number;
@@ -91,6 +98,9 @@ struct Index {
   @State private deleteTargetId: string = '';
   @State private isDeleting: boolean = false;
   @State private isSavingEvidence: boolean = false;
+  @State private evidenceDraftAction: EvidenceDraftAction = 'NONE';
+  @State private evidenceDraftTargetId: string = '';
+  @State private evidenceDraftUri: string = '';
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
@@ -168,12 +178,74 @@ struct Index {
     this.evidenceTags = '';
   }
 
+  private hasEvidenceDraft(): boolean {
+    return this.selectedText.trim().length > 0 && this.selectedRects.length > 0;
+  }
+
   private cancelEvidenceDraft(): void {
     if (this.isSavingEvidence) {
       return;
     }
     this.resetEvidenceDraft();
     this.statusMessage = '已取消本次证据卡';
+  }
+
+  private requestEvidenceDraftDiscard(
+    action: EvidenceDraftAction,
+    targetId: string = '',
+    uri: string = ''
+  ): boolean {
+    if (!this.hasEvidenceDraft() || this.isSavingEvidence) {
+      return false;
+    }
+    this.evidenceDraftAction = action;
+    this.evidenceDraftTargetId = targetId;
+    this.evidenceDraftUri = uri;
+    this.statusMessage = '当前证据卡草稿尚未保存';
+    return true;
+  }
+
+  private cancelEvidenceDraftDiscard(): void {
+    this.evidenceDraftAction = 'NONE';
+    this.evidenceDraftTargetId = '';
+    this.evidenceDraftUri = '';
+    this.statusMessage = '已保留当前证据卡草稿';
+  }
+
+  private async discardEvidenceDraftAndContinue(): Promise<void> {
+    const action = this.evidenceDraftAction;
+    const targetId = this.evidenceDraftTargetId;
+    const uri = this.evidenceDraftUri;
+    this.evidenceDraftAction = 'NONE';
+    this.evidenceDraftTargetId = '';
+    this.evidenceDraftUri = '';
+    this.resetEvidenceDraft();
+    if (action === 'OPEN_DOCUMENT') {
+      const document = this.documentById(targetId);
+      if (document !== undefined) {
+        await this.openDocument(document);
+        return;
+      }
+    } else if (action === 'IMPORT_PDF') {
+      await this.importPdf();
+      return;
+    } else if (action === 'IMPORT_DROPPED_PDF') {
+      await this.importPdfFromUri(uri);
+      return;
+    } else if (action === 'DELETE_DOCUMENT') {
+      const document = this.documentById(targetId);
+      if (document !== undefined) {
+        this.requestDeleteDocument(document);
+        return;
+      }
+    } else if (action === 'RETURN_TO_EVIDENCE') {
+      const card = this.evidenceCards.find((item: EvidenceCard): boolean => item.id === targetId);
+      if (card !== undefined) {
+        await this.returnToEvidence(card);
+        return;
+      }
+    }
+    this.statusMessage = '目标内容已不存在，证据卡草稿已放弃';
   }
 
   private selectedSourceLabel(): string {
@@ -272,6 +344,9 @@ struct Index {
   }
 
   private async importPdf(): Promise<void> {
+    if (this.requestEvidenceDraftDiscard('IMPORT_PDF')) {
+      return;
+    }
     const context = this.hostContext();
     if (context === undefined || this.isLoading || !this.isReady) {
       return;
@@ -293,6 +368,9 @@ struct Index {
   }
 
   private async importPdfFromUri(uri: string): Promise<void> {
+    if (this.requestEvidenceDraftDiscard('IMPORT_DROPPED_PDF', '', uri)) {
+      return;
+    }
     const context = this.hostContext();
     if (context === undefined || this.isLoading || !this.isReady) {
       return;
@@ -371,6 +449,9 @@ struct Index {
     }
     if (!this.importService.fileExists(record.source)) {
       this.statusMessage = `找不到“${record.title}”的本地 PDF 副本`;
+      return;
+    }
+    if (this.requestEvidenceDraftDiscard('OPEN_DOCUMENT', record.id)) {
       return;
     }
     this.isLoading = true;
@@ -599,6 +680,9 @@ struct Index {
     const document = this.documentById(card.documentId);
     if (document === undefined) {
       this.statusMessage = '原始资料已删除，证据内容仍保留';
+      return;
+    }
+    if (this.requestEvidenceDraftDiscard('RETURN_TO_EVIDENCE', card.id)) {
       return;
     }
     if (document.kind === 'WEB') {
@@ -872,6 +956,10 @@ struct Index {
   }
 
   private requestDeleteDocument(document: DocumentRecord): void {
+    if (document.id === this.activeDocumentId &&
+      this.requestEvidenceDraftDiscard('DELETE_DOCUMENT', document.id)) {
+      return;
+    }
     this.showWebEditor = false;
     this.showPdfEditor = false;
     this.deleteTargetKind = 'DOCUMENT';
@@ -1334,6 +1422,10 @@ struct Index {
     const modifier = controlPressed || event.metaKey === 1;
     if (!modifier) {
       if (event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+        if (this.evidenceDraftAction !== 'NONE') {
+          this.cancelEvidenceDraftDiscard();
+          return true;
+        }
         if (this.deleteTargetKind !== 'NONE') {
           this.cancelDelete();
           return true;
@@ -1357,7 +1449,10 @@ struct Index {
       }
       return false;
     }
-    if (this.deleteTargetKind !== 'NONE' || this.showWebEditor || this.showPdfEditor) {
+    if (this.evidenceDraftAction !== 'NONE' ||
+      this.deleteTargetKind !== 'NONE' ||
+      this.showWebEditor ||
+      this.showPdfEditor) {
       return true;
     }
     if (event.keyCode === KeyCode.KEYCODE_O) {
@@ -2797,6 +2892,71 @@ struct Index {
   }
 
   @Builder
+  private EvidenceDraftDiscardOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.cancelEvidenceDraftDiscard();
+        });
+      Column({ space: 14 }) {
+        Text('放弃未保存的证据卡？')
+          .fontSize(19)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.primaryText())
+          .width('100%');
+        Row() {
+          Text(this.selectedSourceLabel())
+            .fontSize(11)
+            .fontColor(this.mutedText());
+          Blank();
+          Text(this.evidenceNote.trim().length > 0 || this.evidenceTags.trim().length > 0 ? '含笔记或标签' : '仅原文选区')
+            .fontSize(11)
+            .fontColor(this.coralColor());
+        }
+        .width('100%');
+        Text(this.selectedText)
+          .fontSize(13)
+          .fontColor(this.highlightPreviewText())
+          .lineHeight(20)
+          .maxLines(4)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .padding(10)
+          .borderRadius(6)
+          .backgroundColor(this.highlightPreviewBackground());
+        Text('继续当前操作会丢弃这段原文的选区、笔记和标签。')
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .lineHeight(19)
+          .width('100%');
+        Row({ space: 9 }) {
+          Blank();
+          this.ToolButton((): string => '继续编辑', (): void => {
+            this.cancelEvidenceDraftDiscard();
+          });
+          this.DangerFilledButton(
+            (): string => '放弃并继续',
+            (): void => {
+              this.discardEvidenceDraftAndContinue();
+            }
+          );
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(480))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
   private DropOverlay(): void {
     Column({ space: 10 }) {
       Text('释放以导入 PDF')
@@ -2924,6 +3084,9 @@ struct Index {
       }
       if (this.showPdfEditor) {
         this.PdfEditorOverlay();
+      }
+      if (this.evidenceDraftAction !== 'NONE') {
+        this.EvidenceDraftDiscardOverlay();
       }
       if (this.deleteTargetKind !== 'NONE') {
         this.DeleteConfirmOverlay();
