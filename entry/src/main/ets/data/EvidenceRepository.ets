@@ -6,13 +6,13 @@ import {
   ReviewStatus,
   uniqueIds
 } from '../model/Models';
-import { ReviewScheduler } from '../services/ReviewScheduler';
+import { EvidenceCardMutationService } from '../services/EvidenceCardMutationService';
 import { transactionFailure } from './TransactionError';
 import { YueJiDatabase } from './YueJiDatabase';
 
 export class EvidenceRepository {
   private database: YueJiDatabase;
-  private reviewScheduler: ReviewScheduler = new ReviewScheduler();
+  private mutationService: EvidenceCardMutationService = new EvidenceCardMutationService();
 
   constructor(database: YueJiDatabase) {
     this.database = database;
@@ -52,6 +52,13 @@ export class EvidenceRepository {
     return this.query(predicates);
   }
 
+  async getById(id: string): Promise<EvidenceCard | undefined> {
+    const predicates = new relationalStore.RdbPredicates('evidence_cards');
+    predicates.equalTo('id', id);
+    const cards = await this.query(predicates);
+    return cards[0];
+  }
+
   async updateCard(
     id: string,
     note: string,
@@ -59,26 +66,24 @@ export class EvidenceRepository {
     kind: EvidenceKind,
     color: number,
     reviewStatus: ReviewStatus
-  ): Promise<number> {
+  ): Promise<EvidenceCard> {
     const updatedAt = Date.now();
-    const existing = (await this.listAll()).find((card: EvidenceCard): boolean => card.id === id);
-    if (existing === undefined) {
-      throw new Error('Evidence card was not found');
-    }
-    const review = this.reviewScheduler.valuesForEdit(existing, reviewStatus, updatedAt);
+    const existing = await this.requireById(id);
+    const updatedCard = this.mutationService.forEdit(
+      existing, note, tags, kind, color, reviewStatus, updatedAt);
     const values: relationalStore.ValuesBucket = {
-      note: note,
-      tags: tags,
-      kind: kind,
-      color: color,
-      review_status: reviewStatus,
-      last_reviewed_at: review.lastReviewedAt,
-      next_review_at: review.nextReviewAt,
-      review_count: review.reviewCount,
-      updated_at: updatedAt
+      note: updatedCard.note,
+      tags: updatedCard.tags,
+      kind: updatedCard.kind,
+      color: updatedCard.color,
+      review_status: updatedCard.reviewStatus,
+      last_reviewed_at: updatedCard.lastReviewedAt,
+      next_review_at: updatedCard.nextReviewAt,
+      review_count: updatedCard.reviewCount,
+      updated_at: updatedCard.updatedAt
     };
     await this.updateById(id, values);
-    return updatedAt;
+    return updatedCard;
   }
 
   async updateWebCard(
@@ -87,63 +92,55 @@ export class EvidenceRepository {
     note: string,
     tags: string,
     reviewStatus: ReviewStatus
-  ): Promise<number> {
+  ): Promise<EvidenceCard> {
     const updatedAt = Date.now();
-    const existing = (await this.listAll()).find((card: EvidenceCard): boolean => card.id === id);
-    if (existing === undefined) {
-      throw new Error('Evidence card was not found');
-    }
-    const review = this.reviewScheduler.valuesForEdit(existing, reviewStatus, updatedAt);
+    const existing = await this.requireById(id);
+    const updatedCard = this.mutationService.forWebEdit(
+      existing, quote, note, tags, reviewStatus, updatedAt);
     const values: relationalStore.ValuesBucket = {
-      quote: quote,
-      page_index: 0,
-      rects_json: '[]',
-      note: note,
-      kind: 'QUOTE',
-      tags: tags,
-      review_status: reviewStatus,
-      last_reviewed_at: review.lastReviewedAt,
-      next_review_at: review.nextReviewAt,
-      review_count: review.reviewCount,
-      updated_at: updatedAt
+      quote: updatedCard.quote,
+      page_index: updatedCard.pageIndex,
+      rects_json: updatedCard.rectsJson,
+      note: updatedCard.note,
+      kind: updatedCard.kind,
+      tags: updatedCard.tags,
+      review_status: updatedCard.reviewStatus,
+      last_reviewed_at: updatedCard.lastReviewedAt,
+      next_review_at: updatedCard.nextReviewAt,
+      review_count: updatedCard.reviewCount,
+      updated_at: updatedCard.updatedAt
     };
     await this.updateById(id, values);
-    return updatedAt;
+    return updatedCard;
   }
 
-  async setReviewStatus(id: string, reviewStatus: ReviewStatus): Promise<number> {
+  async setReviewStatus(id: string, reviewStatus: ReviewStatus): Promise<EvidenceCard> {
     const updatedAt = Date.now();
-    const existing = (await this.listAll()).find((card: EvidenceCard): boolean => card.id === id);
-    if (existing === undefined) {
-      throw new Error('Evidence card was not found');
-    }
-    const review = this.reviewScheduler.valuesForReviewAction(existing, reviewStatus, updatedAt);
+    const existing = await this.requireById(id);
+    const updatedCard = this.mutationService.forReviewStatus(existing, reviewStatus, updatedAt);
     const values: relationalStore.ValuesBucket = {
-      review_status: reviewStatus,
-      last_reviewed_at: review.lastReviewedAt,
-      next_review_at: review.nextReviewAt,
-      review_count: review.reviewCount,
-      updated_at: updatedAt
+      review_status: updatedCard.reviewStatus,
+      last_reviewed_at: updatedCard.lastReviewedAt,
+      next_review_at: updatedCard.nextReviewAt,
+      review_count: updatedCard.reviewCount,
+      updated_at: updatedCard.updatedAt
     };
     await this.updateById(id, values);
-    return updatedAt;
+    return updatedCard;
   }
 
-  async deferReview(id: string): Promise<number> {
+  async deferReview(id: string): Promise<EvidenceCard> {
     const updatedAt = Date.now();
-    const existing = (await this.listAll()).find((card: EvidenceCard): boolean => card.id === id);
-    if (existing === undefined) {
-      throw new Error('Evidence card was not found');
-    }
-    const review = this.reviewScheduler.deferValues(existing, updatedAt);
+    const existing = await this.requireById(id);
+    const updatedCard = this.mutationService.forDeferredReview(existing, updatedAt);
     await this.updateById(id, {
-      review_status: 'TO_REVIEW',
-      last_reviewed_at: review.lastReviewedAt,
-      next_review_at: review.nextReviewAt,
-      review_count: review.reviewCount,
-      updated_at: updatedAt
+      review_status: updatedCard.reviewStatus,
+      last_reviewed_at: updatedCard.lastReviewedAt,
+      next_review_at: updatedCard.nextReviewAt,
+      review_count: updatedCard.reviewCount,
+      updated_at: updatedCard.updatedAt
     });
-    return updatedAt;
+    return updatedCard;
   }
 
   async batchSetReviewStatus(ids: string[], reviewStatus: ReviewStatus): Promise<EvidenceCard[]> {
@@ -167,30 +164,21 @@ export class EvidenceRepository {
         if (card === undefined) {
           continue;
         }
-        const review = this.reviewScheduler.valuesForReviewAction(card, reviewStatus, updatedAt);
+        const updatedCard = this.mutationService.forReviewStatus(card, reviewStatus, updatedAt);
         await store.execute(
           'UPDATE evidence_cards SET review_status = ?, last_reviewed_at = ?, next_review_at = ?, ' +
           'review_count = ?, updated_at = ? WHERE id = ?',
           transactionId,
-          [reviewStatus, review.lastReviewedAt, review.nextReviewAt, review.reviewCount, updatedAt, id]
+          [
+            updatedCard.reviewStatus,
+            updatedCard.lastReviewedAt,
+            updatedCard.nextReviewAt,
+            updatedCard.reviewCount,
+            updatedCard.updatedAt,
+            id
+          ]
         );
-        updatedCards.push({
-          id: card.id,
-          documentId: card.documentId,
-          quote: card.quote,
-          pageIndex: card.pageIndex,
-          rectsJson: card.rectsJson,
-          note: card.note,
-          kind: card.kind,
-          color: card.color,
-          tags: card.tags,
-          reviewStatus: reviewStatus,
-          lastReviewedAt: review.lastReviewedAt,
-          nextReviewAt: review.nextReviewAt,
-          reviewCount: review.reviewCount,
-          createdAt: card.createdAt,
-          updatedAt: updatedAt
-        });
+        updatedCards.push(updatedCard);
       }
       await store.commit(transactionId);
       return updatedCards;
@@ -221,31 +209,13 @@ export class EvidenceRepository {
     const updatedCards: EvidenceCard[] = [];
     try {
       for (const card of targetCards) {
-        const mergedTags = normalizeTags(
-          card.tags.length > 0 ? `${card.tags}, ${normalizedTags}` : normalizedTags
-        );
+        const updatedCard = this.mutationService.withAppendedTags(card, normalizedTags, updatedAt);
         await store.execute(
           'UPDATE evidence_cards SET tags = ?, updated_at = ? WHERE id = ?',
           transactionId,
-          [mergedTags, updatedAt, card.id]
+          [updatedCard.tags, updatedCard.updatedAt, card.id]
         );
-        updatedCards.push({
-          id: card.id,
-          documentId: card.documentId,
-          quote: card.quote,
-          pageIndex: card.pageIndex,
-          rectsJson: card.rectsJson,
-          note: card.note,
-          kind: card.kind,
-          color: card.color,
-          tags: mergedTags,
-          reviewStatus: card.reviewStatus,
-          lastReviewedAt: card.lastReviewedAt,
-          nextReviewAt: card.nextReviewAt,
-          reviewCount: card.reviewCount,
-          createdAt: card.createdAt,
-          updatedAt: updatedAt
-        });
+        updatedCards.push(updatedCard);
       }
       await store.commit(transactionId);
       return updatedCards;
@@ -281,6 +251,14 @@ export class EvidenceRepository {
     if (updatedCount !== 1) {
       throw new Error('Evidence card was not updated');
     }
+  }
+
+  private async requireById(id: string): Promise<EvidenceCard> {
+    const card = await this.getById(id);
+    if (card === undefined) {
+      throw new Error('Evidence card was not found');
+    }
+    return card;
   }
 
   private async query(predicates: relationalStore.RdbPredicates): Promise<EvidenceCard[]> {

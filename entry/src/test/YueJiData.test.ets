@@ -22,6 +22,7 @@ import {
   DataHealthService
 } from '../main/ets/services/DataHealthService';
 import { DiagnosticService } from '../main/ets/services/DiagnosticService';
+import { EvidenceCardMutationService } from '../main/ets/services/EvidenceCardMutationService';
 import { ReviewScheduler } from '../main/ets/services/ReviewScheduler';
 import {
   TransactionFailureError,
@@ -324,6 +325,77 @@ export default function yueJiDataTest(): void {
       expect(schedule.lastReviewedAt).assertEqual(card.lastReviewedAt);
       expect(schedule.nextReviewAt).assertEqual(card.nextReviewAt);
       expect(schedule.reviewCount).assertEqual(1);
+    });
+
+    it('returns complete evidence state for edits without advancing an unchanged review schedule', 0, (): void => {
+      const card = createEvidence();
+      card.reviewStatus = 'MASTERED';
+      card.lastReviewedAt = 5000;
+      card.nextReviewAt = 6000;
+      card.reviewCount = 2;
+
+      const updated = new EvidenceCardMutationService().forEdit(
+        card,
+        '  新笔记  ',
+        '论文, 新标签, 论文',
+        'UNDERLINE',
+        0xFF57C7A5,
+        'MASTERED',
+        7000
+      );
+
+      expect(updated.note).assertEqual('  新笔记  ');
+      expect(updated.tags).assertEqual('论文, 新标签');
+      expect(updated.kind).assertEqual('UNDERLINE');
+      expect(updated.color).assertEqual(0xFF57C7A5);
+      expect(updated.lastReviewedAt).assertEqual(5000);
+      expect(updated.nextReviewAt).assertEqual(6000);
+      expect(updated.reviewCount).assertEqual(2);
+      expect(updated.updatedAt).assertEqual(7000);
+    });
+
+    it('returns the exact deferred card state used by focused review', 0, (): void => {
+      const card = createEvidence();
+      card.reviewStatus = 'MASTERED';
+      card.lastReviewedAt = 4000;
+      card.nextReviewAt = 5000;
+      card.reviewCount = 3;
+      const updatedAt = 1000000;
+
+      const updated = new EvidenceCardMutationService().forDeferredReview(card, updatedAt);
+
+      expect(updated.reviewStatus).assertEqual('TO_REVIEW');
+      expect(updated.lastReviewedAt).assertEqual(4000);
+      expect(updated.nextReviewAt).assertEqual(updatedAt + 24 * 60 * 60 * 1000);
+      expect(updated.reviewCount).assertEqual(3);
+      expect(updated.updatedAt).assertEqual(updatedAt);
+    });
+
+    it('normalizes web evidence and batch tags in returned persisted cards', 0, (): void => {
+      const service = new EvidenceCardMutationService();
+      const webCard = createWebEvidence();
+      webCard.pageIndex = 2;
+      webCard.rectsJson = createEvidence().rectsJson;
+      webCard.kind = 'HIGHLIGHT';
+
+      const updatedWebCard = service.forWebEdit(
+        webCard,
+        '  新网页摘录  ',
+        '  新网页笔记  ',
+        '课程, 研究, 课程',
+        'TO_REVIEW',
+        8000
+      );
+      const taggedCard = service.withAppendedTags(updatedWebCard, '研究, 期末', 9000);
+
+      expect(updatedWebCard.quote).assertEqual('新网页摘录');
+      expect(updatedWebCard.note).assertEqual('新网页笔记');
+      expect(updatedWebCard.pageIndex).assertEqual(0);
+      expect(updatedWebCard.rectsJson).assertEqual('[]');
+      expect(updatedWebCard.kind).assertEqual('QUOTE');
+      expect(updatedWebCard.tags).assertEqual('课程, 研究');
+      expect(taggedCard.tags).assertEqual('课程, 研究, 期末');
+      expect(taggedCard.updatedAt).assertEqual(9000);
     });
 
     it('does not count editing an overdue mastered card as a review', 0, (): void => {

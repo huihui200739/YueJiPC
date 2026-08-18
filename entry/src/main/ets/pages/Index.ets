@@ -991,7 +991,7 @@ struct Index {
     quote: string,
     note: string,
     tags: string
-  ): Promise<void> {
+  ): Promise<EvidenceCard | undefined> {
     const cards = (await this.evidenceRepository.listByDocument(document.id))
       .filter((card: EvidenceCard): boolean => card.kind === 'QUOTE');
     const trimmedQuote = quote.trim();
@@ -999,19 +999,20 @@ struct Index {
       for (const card of cards) {
         await this.evidenceRepository.delete(card.id);
       }
-      return;
+      return undefined;
     }
     const existing = cards[0];
     if (existing === undefined) {
-      await this.evidenceRepository.insert(this.createWebEvidenceCard(
+      const created = this.createWebEvidenceCard(
         document,
         trimmedQuote,
         note,
         tags
-      ));
-      return;
+      );
+      await this.evidenceRepository.insert(created);
+      return created;
     }
-    await this.evidenceRepository.updateWebCard(
+    const updatedCard = await this.evidenceRepository.updateWebCard(
       existing.id,
       trimmedQuote,
       note.trim(),
@@ -1021,6 +1022,7 @@ struct Index {
     for (let index = 1; index < cards.length; index++) {
       await this.evidenceRepository.delete(cards[index].id);
     }
+    return updatedCard;
   }
 
   private activeDocument(): DocumentRecord | undefined {
@@ -1581,61 +1583,6 @@ struct Index {
     this.showContextStatus(`正在编辑证据卡：${this.evidenceSourceLabel(card)}`);
   }
 
-  private localEvidenceCard(
-    card: EvidenceCard,
-    note: string,
-    tags: string,
-    kind: EvidenceKind,
-    color: number,
-    reviewStatus: ReviewStatus,
-    updatedAt: number,
-    reviewAction: boolean
-  ): EvidenceCard {
-    const review = reviewAction ?
-      this.reviewScheduler.valuesForReviewAction(card, reviewStatus, updatedAt) :
-      this.reviewScheduler.valuesForEdit(card, reviewStatus, updatedAt);
-    return {
-      id: card.id,
-      documentId: card.documentId,
-      quote: card.quote,
-      pageIndex: card.pageIndex,
-      rectsJson: card.rectsJson,
-      note: note,
-      kind: kind,
-      color: color,
-      tags: tags,
-      reviewStatus: reviewStatus,
-      lastReviewedAt: review.lastReviewedAt,
-      nextReviewAt: review.nextReviewAt,
-      reviewCount: review.reviewCount,
-      createdAt: card.createdAt,
-      updatedAt: updatedAt
-    };
-  }
-
-  private localReviewCard(card: EvidenceCard, updatedAt: number, deferred: boolean): EvidenceCard {
-    const review = deferred ?
-      this.reviewScheduler.deferValues(card, updatedAt) :
-      this.reviewScheduler.valuesForReviewAction(card, 'TO_REVIEW', updatedAt);
-    return {
-      id: card.id,
-      documentId: card.documentId,
-      quote: card.quote,
-      pageIndex: card.pageIndex,
-      rectsJson: card.rectsJson,
-      note: card.note,
-      kind: card.kind,
-      color: card.color,
-      tags: card.tags,
-      reviewStatus: 'TO_REVIEW',
-      lastReviewedAt: review.lastReviewedAt,
-      nextReviewAt: review.nextReviewAt,
-      reviewCount: review.reviewCount,
-      createdAt: card.createdAt,
-      updatedAt: updatedAt
-    };
-  }
-
   private replaceLocalEvidenceCard(updatedCard: EvidenceCard): void {
     this.evidenceCards = this.evidenceCards.map((item: EvidenceCard): EvidenceCard =>
       item.id === updatedCard.id ? updatedCard : item);
@@ -1658,23 +1605,13 @@ struct Index {
     this.isSavingEditor = true;
     this.statusMessage = '正在保存证据卡修改…';
     try {
-      const updatedAt = await this.evidenceRepository.updateCard(
+      const updatedCard = await this.evidenceRepository.updateCard(
         card.id,
         note,
         tags,
         kind,
         color,
         reviewStatus
-      );
-      const updatedCard = this.localEvidenceCard(
-        card,
-        note,
-        tags,
-        kind,
-        color,
-        reviewStatus,
-        updatedAt,
-        false
       );
       let listReloaded = true;
       try {
@@ -1712,17 +1649,7 @@ struct Index {
     const next: ReviewStatus = card.reviewStatus === 'MASTERED' ? 'TO_REVIEW' : 'MASTERED';
     this.updatingEvidenceStatusId = card.id;
     try {
-      const updatedAt = await this.evidenceRepository.setReviewStatus(card.id, next);
-      const updatedCard = this.localEvidenceCard(
-        card,
-        card.note,
-        card.tags,
-        card.kind,
-        card.color,
-        next,
-        updatedAt,
-        true
-      );
+      const updatedCard = await this.evidenceRepository.setReviewStatus(card.id, next);
       try {
         this.evidenceCards = await this.evidenceRepository.listAll();
         this.showTransientStatus(next === 'MASTERED' ? '已标记为掌握' : '已加入待复习');
@@ -2206,27 +2133,15 @@ struct Index {
     this.isReviewSessionUpdating = true;
     this.statusMessage = status === 'MASTERED' ? '正在标记掌握…' : '正在保留待复习状态…';
     try {
-      const updatedAt = status === 'TO_REVIEW' ?
+      const updatedCard = status === 'TO_REVIEW' ?
         await this.evidenceRepository.deferReview(card.id) :
         await this.evidenceRepository.setReviewStatus(card.id, status);
-      const updatedCard = this.localEvidenceCard(
-        card,
-        card.note,
-        card.tags,
-        card.kind,
-        card.color,
-        status,
-        updatedAt,
-        true
-      );
-      const localUpdatedCard = status === 'TO_REVIEW' ?
-        this.localReviewCard(card, updatedAt, true) : updatedCard;
       let listReloaded = true;
       try {
         this.evidenceCards = await this.evidenceRepository.listAll();
       } catch (error) {
         listReloaded = false;
-        this.replaceLocalEvidenceCard(localUpdatedCard);
+        this.replaceLocalEvidenceCard(updatedCard);
       }
       this.reviewSessionReviewedCount += 1;
       if (status === 'MASTERED') {
