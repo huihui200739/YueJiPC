@@ -8,7 +8,6 @@ import {
   isDocumentKind,
   isEvidenceKind,
   isReviewStatus,
-  isValidStoredSelectionJson,
   LEGACY_BACKUP_SCHEMA_VERSION,
   MAX_BACKUP_FILE_SIZE,
   MAX_COLLECTION_DESCRIPTION_LENGTH,
@@ -18,7 +17,8 @@ import {
   MAX_QUOTE_LENGTH,
   MAX_TAGS_LENGTH,
   MAX_TITLE_LENGTH,
-  MAX_URL_LENGTH
+  MAX_URL_LENGTH,
+  validateEvidenceSource
 } from '../model/Models';
 
 export interface BackupValidationResult {
@@ -205,25 +205,26 @@ export class BackupValidator {
         !Number.isInteger(card.color) ||
         card.color < 0 ||
         card.color > 0xFFFFFFFF ||
-        !this.validEvidenceGeometry(card) ||
         !this.isTimestamp(card.createdAt) ||
         !this.isTimestamp(card.updatedAt) ||
         card.updatedAt < card.createdAt) {
         return false;
       }
       const document = documents.find((item: BackupDocumentInput): boolean => item.id === card.documentId);
-      return document !== undefined &&
-        (document.kind === 'WEB' ?
-          card.pageIndex === 0 :
-          document.pageCount === 0 || card.pageIndex < document.pageCount);
+      if (document === undefined) {
+        return false;
+      }
+      const sourceValidation = validateEvidenceSource(
+        document.kind,
+        document.pageCount,
+        card.kind,
+        card.pageIndex,
+        card.rectsJson
+      );
+      return sourceValidation.sourceCompatible &&
+        sourceValidation.selectionValid &&
+        sourceValidation.pageInRange;
     });
-  }
-
-  private validEvidenceGeometry(card: BackupEvidenceInput): boolean {
-    if (card.kind === 'QUOTE') {
-      return card.rectsJson === '[]' || isValidStoredSelectionJson(card.rectsJson);
-    }
-    return isValidStoredSelectionJson(card.rectsJson);
   }
 
   private validateCollections(collections: CollectionRecord[]): boolean {

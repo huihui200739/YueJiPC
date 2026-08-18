@@ -133,6 +133,17 @@ export class BackupService {
       }
     }
     await fs.moveFile(archive.archivePath, archive.originalPath);
+    try {
+      await this.removeArchiveDirectory(archive.archivePath);
+    } catch (error) {
+    }
+  }
+
+  async discardArchivedPdf(archive: DeletedPdfArchive): Promise<void> {
+    if (this.fileExists(archive.archivePath)) {
+      await fs.unlink(archive.archivePath);
+    }
+    await this.removeArchiveDirectory(archive.archivePath);
   }
 
   normalizePayload(payload: BackupPayload, filesDir: string): BackupPayload {
@@ -328,6 +339,17 @@ export class BackupService {
       return fs.statSync(path).isFile();
     } catch (error) {
       return false;
+    }
+  }
+
+  private async removeArchiveDirectory(archivePath: string): Promise<void> {
+    const lastSlash = archivePath.lastIndexOf('/');
+    if (lastSlash <= 0) {
+      return;
+    }
+    const directory = archivePath.substring(0, lastSlash);
+    if (this.directoryExists(directory)) {
+      await fs.rmdir(directory);
     }
   }
 

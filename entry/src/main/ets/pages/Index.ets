@@ -2448,6 +2448,7 @@ struct Index {
     }
     const report = this.healthReport;
     return `发现 ${report.issueCount} 个问题：${report.missingPdfCount} 份 PDF 缺失，` +
+      `${report.invalidEvidenceSourceCount} 张证据卡来源类型异常，` +
       `${report.invalidSelectionCount} 张证据卡选区异常，${report.orphanRelationCount} 条关联异常，` +
       `${report.orphanFileCount} 个孤立文件。`;
   }
@@ -2781,6 +2782,7 @@ struct Index {
 
   private async deleteDocument(document: DocumentRecord): Promise<void> {
     let recordDeleted = false;
+    let cleanupWarning = false;
     let archivedPdf: DeletedPdfArchive | undefined = undefined;
     let snapshotFileName: string = '';
     try {
@@ -2810,19 +2812,29 @@ struct Index {
       }
       await this.libraryRepository.delete(document.id);
       recordDeleted = true;
-      if (document.kind === 'PDF' && archivedPdf === undefined &&
-        this.importService.fileExists(document.source)) {
-        await fs.unlink(document.source);
-        const lastSlash = document.source.lastIndexOf('/');
-        if (lastSlash > 0) {
-          await fs.rmdir(document.source.substring(0, lastSlash));
+      if (archivedPdf !== undefined) {
+        try {
+          await this.backupService.discardArchivedPdf(archivedPdf);
+        } catch (error) {
+          cleanupWarning = true;
+        }
+      } else if (document.kind === 'PDF' && this.importService.fileExists(document.source)) {
+        try {
+          await fs.unlink(document.source);
+          const lastSlash = document.source.lastIndexOf('/');
+          if (lastSlash > 0) {
+            await fs.rmdir(document.source.substring(0, lastSlash));
+          }
+        } catch (error) {
+          cleanupWarning = true;
         }
       }
       await this.reloadData();
       this.refreshHealthReport();
       this.showTransientStatus(
         `已从本地资料库删除 ${document.title}` +
-        (snapshotFileName.length > 0 ? `；删除前快照已保存为 ${snapshotFileName}` : '')
+        (snapshotFileName.length > 0 ? `；删除前快照已保存为 ${snapshotFileName}` : '') +
+        (cleanupWarning ? '；部分临时文件需要稍后清理' : '')
       );
     } catch (error) {
       if (archivedPdf !== undefined && !recordDeleted) {

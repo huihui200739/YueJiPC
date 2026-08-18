@@ -116,6 +116,12 @@ export interface StoredSelection {
   rectArray: StoredPdfRect[];
 }
 
+export interface EvidenceSourceValidation {
+  sourceCompatible: boolean;
+  selectionValid: boolean;
+  pageInRange: boolean;
+}
+
 export function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 }
@@ -182,6 +188,52 @@ export function isValidStoredSelectionJson(value: string): boolean {
   } catch (error) {
     return false;
   }
+}
+
+export function validateEvidenceSource(
+  documentKind: string,
+  documentPageCount: number,
+  evidenceKind: string,
+  pageIndex: number,
+  rectsJson: string
+): EvidenceSourceValidation {
+  if (documentKind === 'WEB') {
+    return {
+      sourceCompatible: evidenceKind === 'QUOTE' && pageIndex === 0 && rectsJson === '[]',
+      selectionValid: true,
+      pageInRange: pageIndex === 0
+    };
+  }
+  if (documentKind !== 'PDF') {
+    return {
+      sourceCompatible: false,
+      selectionValid: false,
+      pageInRange: false
+    };
+  }
+
+  let pageInRange = Number.isInteger(pageIndex) &&
+    pageIndex >= 0 &&
+    (documentPageCount === 0 || pageIndex < documentPageCount);
+  let selectionValid = isValidStoredSelectionJson(rectsJson);
+  if (selectionValid) {
+    try {
+      const selections = JSON.parse(rectsJson) as StoredSelection[];
+      selectionValid = selections[0].pageIndex === pageIndex;
+      if (documentPageCount > 0 &&
+        selections.some((selection: StoredSelection): boolean =>
+          selection.pageIndex >= documentPageCount)) {
+        pageInRange = false;
+      }
+    } catch (error) {
+      selectionValid = false;
+    }
+  }
+  return {
+    sourceCompatible: evidenceKind === 'HIGHLIGHT' || evidenceKind === 'UNDERLINE',
+    selectionValid: selectionValid,
+    pageInRange: pageInRange
+  };
 }
 
 export function uniqueIds(values: string[]): string[] {

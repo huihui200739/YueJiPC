@@ -402,6 +402,36 @@ export default function yueJiDataTest(): void {
       expect(result.valid).assertTrue();
     });
 
+    it('rejects evidence kinds and geometry that do not match their source', 0, (): void => {
+      const pdfQuote = createPayload();
+      pdfQuote.evidenceCards[0].kind = 'QUOTE';
+      pdfQuote.evidenceCards[0].rectsJson = '[]';
+      expect(new BackupValidator().validateJson(JSON.stringify(pdfQuote)).valid).assertFalse();
+
+      const webAnnotation = createPayload();
+      webAnnotation.documents = [createWebDocument()];
+      const card = createWebEvidence();
+      card.kind = 'HIGHLIGHT';
+      card.rectsJson = createEvidence().rectsJson;
+      webAnnotation.evidenceCards = [card];
+      webAnnotation.collectionItems = [];
+      expect(new BackupValidator().validateJson(JSON.stringify(webAnnotation)).valid).assertFalse();
+    });
+
+    it('rejects PDF selections whose anchor or selected pages cannot be restored', 0, (): void => {
+      const mismatchedAnchor = createPayload();
+      mismatchedAnchor.evidenceCards[0].pageIndex = 0;
+      expect(new BackupValidator().validateJson(JSON.stringify(mismatchedAnchor)).valid).assertFalse();
+
+      const selectedPageOutOfRange = createPayload();
+      selectedPageOutOfRange.evidenceCards[0].rectsJson =
+        '[{"pageIndex":1,"isRotated":0,"rectArray":' +
+        '[{"left":10,"top":20,"right":80,"bottom":40}]},' +
+        '{"pageIndex":3,"isRotated":0,"rectArray":' +
+        '[{"left":10,"top":20,"right":80,"bottom":40}]}]';
+      expect(new BackupValidator().validateJson(JSON.stringify(selectedPageOutOfRange)).valid).assertFalse();
+    });
+
     it('rejects web records that carry PDF page state', 0, (): void => {
       const payload = createPayload();
       payload.documents = [createWebDocument()];
@@ -462,7 +492,14 @@ export default function yueJiDataTest(): void {
     it('reports broken evidence, selection, page, collection and web relations', 0, (): void => {
       const documents: DocumentRecord[] = [createDocument(), createWebDocument()];
       documents[1].source = 'example.com/article';
-      const evidenceCards: EvidenceCard[] = [createEvidence(), createEvidence('missing-document')];
+      const invalidWebCard = createWebEvidence();
+      invalidWebCard.kind = 'UNDERLINE';
+      invalidWebCard.rectsJson = createEvidence().rectsJson;
+      const evidenceCards: EvidenceCard[] = [
+        createEvidence(),
+        createEvidence('missing-document'),
+        invalidWebCard
+      ];
       evidenceCards[0].pageIndex = 4;
       evidenceCards[0].rectsJson = 'broken-selection';
       const collections: CollectionRecord[] = [createCollection()];
@@ -481,6 +518,7 @@ export default function yueJiDataTest(): void {
       expect(codes.includes('INVALID_SELECTION')).assertTrue();
       expect(codes.includes('ORPHAN_EVIDENCE')).assertTrue();
       expect(codes.includes('ORPHAN_COLLECTION_ITEM')).assertTrue();
+      expect(codes.includes('INVALID_EVIDENCE_SOURCE')).assertTrue();
     });
 
     it('serializes diagnostics without document content or source URLs', 0, (): void => {
@@ -490,6 +528,7 @@ export default function yueJiDataTest(): void {
         issueCount: 0,
         missingPdfCount: 0,
         orphanFileCount: 0,
+        invalidEvidenceSourceCount: 0,
         invalidSelectionCount: 0,
         orphanRelationCount: 0
       };

@@ -13,8 +13,8 @@
 - [x] 资料库、收藏、最近阅读、搜索和标签
 - [x] 网页资料、复习中心和 Markdown 导出
 - [x] 跨资料主题集合、证据卡只读对比和批量复习/标签操作
-- [x] JSON 结构化备份与恢复、恢复前快照和删除前保护
-- [x] 数据健康检查、孤儿关系提示和脱敏诊断导出
+- [x] JSON 结构化备份与恢复、恢复前快照和事务性删除保护
+- [x] 数据健康检查、证据来源类型/孤儿关系提示和脱敏诊断导出
 - [x] 数据库 schema 版本标记、升级迁移、索引和清理触发器
 - [x] 暗色、专注、快捷键、拖放和窄窗口布局
 - [x] 数据本地存储，系统级备份恢复关闭；应用内 JSON 备份由用户主动操作
@@ -35,11 +35,11 @@
 当前无签名产物：
 
 - HAP 路径：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- HAP 大小：500388 bytes
-- HAP SHA-256：`39fd6368a05e7683ba3576ed38fd04f8f18539cb6c15bbf23c976c727198c88a`
+- HAP 大小：502432 bytes
+- HAP SHA-256：`d62876d81896c139662d23ffe9faf00ca942eb8927cbada66fa25856e53e4bfc`
 - APP 路径：`build/outputs/default/YueJiPC-default-unsigned.app`
-- APP 大小：219661 bytes
-- APP SHA-256：`599cfc58b2c670f4c9d1d179d704688faa0cc957c756f9070d91300ffbe4f433`
+- APP 大小：220969 bytes
+- APP SHA-256：`cde25144b9d1ac34be72d496439bc2ebdf8b3cafa56f3b08d1f6c6df2feb22c9`
 - 构建时间：2026 年 8 月 18 日 15:33:46（Asia/Shanghai）
 
 完成发布签名后，必须重新记录已签名产物的文件名、大小和 SHA-256；当前哈希不能作为送审包哈希。

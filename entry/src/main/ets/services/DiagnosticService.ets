@@ -22,6 +22,7 @@ export interface DiagnosticSnapshot {
   healthIssueCount: number;
   missingPdfCount: number;
   orphanFileCount: number;
+  invalidEvidenceSourceCount: number;
   invalidSelectionCount: number;
   orphanRelationCount: number;
 }
@@ -53,6 +54,7 @@ export class DiagnosticService {
       healthIssueCount: report.issueCount,
       missingPdfCount: report.missingPdfCount,
       orphanFileCount: report.orphanFileCount,
+      invalidEvidenceSourceCount: report.invalidEvidenceSourceCount,
       invalidSelectionCount: report.invalidSelectionCount,
       orphanRelationCount: report.orphanRelationCount
     };

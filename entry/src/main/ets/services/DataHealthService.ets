@@ -6,7 +6,7 @@ import {
   EvidenceCard,
   canonicalPdfPath,
   isCollectionItemKind,
-  isValidStoredSelectionJson
+  validateEvidenceSource
 } from '../model/Models';
 
 export type DataHealthIssueCode =
@@ -14,6 +14,7 @@ export type DataHealthIssueCode =
   'INVALID_PDF_PATH' |
   'ORPHAN_FILE' |
   'ORPHAN_EVIDENCE' |
+  'INVALID_EVIDENCE_SOURCE' |
   'INVALID_SELECTION' |
   'PAGE_OUT_OF_RANGE' |
   'ORPHAN_COLLECTION_ITEM' |
@@ -31,6 +32,7 @@ export interface DataHealthReport {
   issueCount: number;
   missingPdfCount: number;
   orphanFileCount: number;
+  invalidEvidenceSourceCount: number;
   invalidSelectionCount: number;
   orphanRelationCount: number;
 }
@@ -80,22 +82,36 @@ export class DataHealthService {
         });
         return;
       }
-      if (document.kind === 'PDF' &&
-        document.pageCount > 0 &&
-        (card.pageIndex < 0 || card.pageIndex >= document.pageCount)) {
+      const sourceValidation = validateEvidenceSource(
+        document.kind,
+        document.pageCount,
+        card.kind,
+        card.pageIndex,
+        card.rectsJson
+      );
+      if (!sourceValidation.sourceCompatible) {
+        issues.push({
+          code: 'INVALID_EVIDENCE_SOURCE',
+          documentId: document.id,
+          detail: document.kind === 'PDF' ?
+            'PDF 证据卡必须使用高亮或下划线并保留原始选区' :
+            '网页证据卡必须是不包含 PDF 页码和选区的摘录卡'
+        });
+      }
+      if (document.kind === 'PDF' && !sourceValidation.pageInRange) {
         issues.push({
           code: 'PAGE_OUT_OF_RANGE',
           documentId: document.id,
-          detail: '证据卡页码超出资料页数'
+          detail: '证据卡页码或选区页超出资料页数'
         });
       }
       if (document.kind === 'PDF' &&
-        card.kind !== 'QUOTE' &&
-        !isValidStoredSelectionJson(card.rectsJson)) {
+        sourceValidation.sourceCompatible &&
+        !sourceValidation.selectionValid) {
         issues.push({
           code: 'INVALID_SELECTION',
           documentId: document.id,
-          detail: '证据卡选区数据无法恢复'
+          detail: '证据卡选区数据无法恢复，或首个选区页与回跳页不一致'
         });
       }
     });
@@ -188,6 +204,8 @@ export class DataHealthService {
         issue.code === 'MISSING_PDF').length,
       orphanFileCount: issues.filter((issue: DataHealthIssue): boolean =>
         issue.code === 'ORPHAN_FILE').length,
+      invalidEvidenceSourceCount: issues.filter((issue: DataHealthIssue): boolean =>
+        issue.code === 'INVALID_EVIDENCE_SOURCE').length,
       invalidSelectionCount: issues.filter((issue: DataHealthIssue): boolean =>
         issue.code === 'INVALID_SELECTION').length,
       orphanRelationCount: issues.filter((issue: DataHealthIssue): boolean =>

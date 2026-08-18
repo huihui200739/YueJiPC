@@ -17,8 +17,8 @@
 - 复习中心的全部、待复习、已掌握和标签过滤
 - 按当前资料或筛选范围导出带来源信息的 Markdown
 - 跨资料主题集合、证据卡只读对比和批量复习/标签操作
-- JSON 结构化备份与恢复；恢复前快照、删除前快照和 PDF 删除归档
-- 数据健康检查、孤儿关系提示和不包含用户内容的脱敏诊断导出
+- JSON 结构化备份与恢复；恢复前快照和成功清理、失败回滚的 PDF 删除保护
+- 数据健康检查、证据来源类型/孤儿关系提示和不包含用户内容的脱敏诊断导出
 - 亮色、暗色、专注模式和窄窗口侧栏
 - `Ctrl/Cmd+O` 导入、`Ctrl/Cmd+F` 搜索、`Ctrl/Cmd+S` 导出
 - 损坏、加密、丢失 PDF，无效网址和存储失败提示
@@ -90,8 +90,8 @@ Release 构建：
 - 已验证普通、200 页、加密和损坏 PDF，以及阅读、证据卡、来源回跳、复习、Markdown 导出、重启恢复和窄窗口布局
 - 已检查 PDF 阅读工具栏的系统符号按钮和固定尺寸布局，启动后显示正常
 - 27 个 JSON/JSON5 配置均可解析；源码区未发现证书、私钥、Profile、凭据或测试 PDF
-- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，500388 bytes，SHA-256 `39fd6368a05e7683ba3576ed38fd04f8f18539cb6c15bbf23c976c727198c88a`
-- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，219661 bytes，SHA-256 `599cfc58b2c670f4c9d1d179d704688faa0cc957c756f9070d91300ffbe4f433`
+- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，502432 bytes，SHA-256 `d62876d81896c139662d23ffe9faf00ca942eb8927cbada66fa25856e53e4bfc`
+- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，220969 bytes，SHA-256 `cde25144b9d1ac34be72d496439bc2ebdf8b3cafa56f3b08d1f6c6df2feb22c9`
 - 产物生成时间：2026 年 8 月 18 日 15:33:46（Asia/Shanghai）
 - 本轮代码新增的数据库级联、输入长度、选区 JSON、网址、导出、拖放、备份恢复和数据健康边界，仍需按 [docs/TEST_PLAN.md](docs/TEST_PLAN.md) 完成人工回归
 - 发布签名、AppGallery Connect 配置、真机验证、3 名学生测试、30 分钟稳定性测试和商店送审仍需完成
