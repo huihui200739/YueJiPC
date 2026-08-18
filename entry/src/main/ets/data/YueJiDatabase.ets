@@ -136,26 +136,15 @@ export class YueJiDatabase {
     await store.executeSql(EVIDENCE_TABLE_SQL);
     await store.executeSql(COLLECTION_TABLE_SQL);
     await store.executeSql(COLLECTION_ITEM_TABLE_SQL);
-    await store.executeSql(EVIDENCE_DOCUMENT_INDEX_SQL);
-    await store.executeSql(EVIDENCE_STATUS_INDEX_SQL);
-    await store.executeSql(EVIDENCE_NEXT_REVIEW_INDEX_SQL);
-    await store.executeSql(EVIDENCE_UPDATED_INDEX_SQL);
-    await store.executeSql(DOCUMENT_RECENT_INDEX_SQL);
-    await store.executeSql(DOCUMENT_FAVORITE_INDEX_SQL);
-    await store.executeSql(DOCUMENT_DELETE_TRIGGER_SQL);
-    await store.executeSql(DOCUMENT_DELETE_COLLECTION_TRIGGER_SQL);
-    await store.executeSql(EVIDENCE_DELETE_COLLECTION_TRIGGER_SQL);
-    await store.executeSql(COLLECTION_DELETE_ITEMS_TRIGGER_SQL);
-    await store.executeSql(COLLECTION_UPDATED_INDEX_SQL);
-    await store.executeSql(COLLECTION_ITEM_COLLECTION_INDEX_SQL);
-    await store.executeSql(DELETE_ORPHAN_EVIDENCE_SQL);
-    await store.executeSql(DELETE_ORPHAN_COLLECTION_ITEMS_SQL);
     const recordedVersion = await this.readSchemaVersion(store);
     if (recordedVersion > DATABASE_SCHEMA_VERSION) {
       throw new Error(`Unsupported database schema version ${recordedVersion}`);
     }
+    await this.ensureCurrentColumns(store);
+    await this.ensureSupportObjects(store);
+    await store.executeSql(DELETE_ORPHAN_EVIDENCE_SQL);
+    await store.executeSql(DELETE_ORPHAN_COLLECTION_ITEMS_SQL);
     if (recordedVersion < DATABASE_SCHEMA_VERSION) {
-      await this.migrateToCurrentVersion(store, recordedVersion);
       await store.executeSql(
         `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', '${DATABASE_SCHEMA_VERSION}')`
       );
@@ -175,6 +164,21 @@ export class YueJiDatabase {
     return this.schemaVersion;
   }
 
+  private async ensureSupportObjects(store: relationalStore.RdbStore): Promise<void> {
+    await store.executeSql(EVIDENCE_DOCUMENT_INDEX_SQL);
+    await store.executeSql(EVIDENCE_STATUS_INDEX_SQL);
+    await store.executeSql(EVIDENCE_NEXT_REVIEW_INDEX_SQL);
+    await store.executeSql(EVIDENCE_UPDATED_INDEX_SQL);
+    await store.executeSql(DOCUMENT_RECENT_INDEX_SQL);
+    await store.executeSql(DOCUMENT_FAVORITE_INDEX_SQL);
+    await store.executeSql(DOCUMENT_DELETE_TRIGGER_SQL);
+    await store.executeSql(DOCUMENT_DELETE_COLLECTION_TRIGGER_SQL);
+    await store.executeSql(EVIDENCE_DELETE_COLLECTION_TRIGGER_SQL);
+    await store.executeSql(COLLECTION_DELETE_ITEMS_TRIGGER_SQL);
+    await store.executeSql(COLLECTION_UPDATED_INDEX_SQL);
+    await store.executeSql(COLLECTION_ITEM_COLLECTION_INDEX_SQL);
+  }
+
   private async readSchemaVersion(store: relationalStore.RdbStore): Promise<number> {
     const predicates = new relationalStore.RdbPredicates('schema_meta');
     predicates.equalTo('key', 'schema_version');
@@ -191,30 +195,11 @@ export class YueJiDatabase {
     }
   }
 
-  private async migrateToCurrentVersion(
-    store: relationalStore.RdbStore,
-    fromVersion: number
-  ): Promise<void> {
-    if (fromVersion < 2) {
-      // Version 2 formalizes the indexes, cleanup rules and schema marker used by release upgrades.
-      await store.executeSql(EVIDENCE_DOCUMENT_INDEX_SQL);
-      await store.executeSql(EVIDENCE_STATUS_INDEX_SQL);
-      await store.executeSql(EVIDENCE_NEXT_REVIEW_INDEX_SQL);
-      await store.executeSql(EVIDENCE_UPDATED_INDEX_SQL);
-      await store.executeSql(DOCUMENT_RECENT_INDEX_SQL);
-      await store.executeSql(DOCUMENT_FAVORITE_INDEX_SQL);
-      await store.executeSql(COLLECTION_UPDATED_INDEX_SQL);
-      await store.executeSql(COLLECTION_ITEM_COLLECTION_INDEX_SQL);
-      await store.executeSql(DELETE_ORPHAN_EVIDENCE_SQL);
-      await store.executeSql(DELETE_ORPHAN_COLLECTION_ITEMS_SQL);
-    }
-    if (fromVersion < 3) {
-      await this.addColumnIfMissing(store, 'documents', 'content_hash', "TEXT NOT NULL DEFAULT ''");
-      await this.addColumnIfMissing(store, 'evidence_cards', 'last_reviewed_at', 'INTEGER NOT NULL DEFAULT 0');
-      await this.addColumnIfMissing(store, 'evidence_cards', 'next_review_at', 'INTEGER NOT NULL DEFAULT 0');
-      await this.addColumnIfMissing(store, 'evidence_cards', 'review_count', 'INTEGER NOT NULL DEFAULT 0');
-      await store.executeSql(EVIDENCE_NEXT_REVIEW_INDEX_SQL);
-    }
+  private async ensureCurrentColumns(store: relationalStore.RdbStore): Promise<void> {
+    await this.addColumnIfMissing(store, 'documents', 'content_hash', "TEXT NOT NULL DEFAULT ''");
+    await this.addColumnIfMissing(store, 'evidence_cards', 'last_reviewed_at', 'INTEGER NOT NULL DEFAULT 0');
+    await this.addColumnIfMissing(store, 'evidence_cards', 'next_review_at', 'INTEGER NOT NULL DEFAULT 0');
+    await this.addColumnIfMissing(store, 'evidence_cards', 'review_count', 'INTEGER NOT NULL DEFAULT 0');
   }
 
   private async addColumnIfMissing(

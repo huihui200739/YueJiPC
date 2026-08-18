@@ -64,7 +64,7 @@ export class EvidenceRepository {
     if (existing === undefined) {
       throw new Error('Evidence card was not found');
     }
-    const review = this.reviewScheduler.valuesForStatus(existing, reviewStatus, updatedAt);
+    const review = this.reviewScheduler.valuesForEdit(existing, reviewStatus, updatedAt);
     const values: relationalStore.ValuesBucket = {
       note: note,
       tags: tags,
@@ -92,7 +92,7 @@ export class EvidenceRepository {
     if (existing === undefined) {
       throw new Error('Evidence card was not found');
     }
-    const review = this.reviewScheduler.valuesForStatus(existing, reviewStatus, updatedAt);
+    const review = this.reviewScheduler.valuesForEdit(existing, reviewStatus, updatedAt);
     const values: relationalStore.ValuesBucket = {
       quote: quote,
       page_index: 0,
@@ -116,7 +116,7 @@ export class EvidenceRepository {
     if (existing === undefined) {
       throw new Error('Evidence card was not found');
     }
-    const review = this.reviewScheduler.valuesForStatus(existing, reviewStatus, updatedAt);
+    const review = this.reviewScheduler.valuesForReviewAction(existing, reviewStatus, updatedAt);
     const values: relationalStore.ValuesBucket = {
       review_status: reviewStatus,
       last_reviewed_at: review.lastReviewedAt,
@@ -165,7 +165,7 @@ export class EvidenceRepository {
         if (card === undefined) {
           continue;
         }
-        const review = this.reviewScheduler.valuesForStatus(card, reviewStatus, updatedAt);
+        const review = this.reviewScheduler.valuesForReviewAction(card, reviewStatus, updatedAt);
         await store.execute(
           'UPDATE evidence_cards SET review_status = ?, last_reviewed_at = ?, next_review_at = ?, ' +
           'review_count = ?, updated_at = ? WHERE id = ?',

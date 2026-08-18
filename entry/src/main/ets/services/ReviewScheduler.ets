@@ -7,7 +7,22 @@ export interface ReviewScheduleValues {
 }
 
 export class ReviewScheduler {
-  valuesForStatus(
+  valuesForEdit(
+    card: EvidenceCard,
+    reviewStatus: ReviewStatus,
+    updatedAt: number
+  ): ReviewScheduleValues {
+    if (reviewStatus === card.reviewStatus) {
+      return {
+        lastReviewedAt: card.lastReviewedAt,
+        nextReviewAt: card.nextReviewAt,
+        reviewCount: card.reviewCount
+      };
+    }
+    return this.valuesForReviewAction(card, reviewStatus, updatedAt);
+  }
+
+  valuesForReviewAction(
     card: EvidenceCard,
     reviewStatus: ReviewStatus,
     updatedAt: number

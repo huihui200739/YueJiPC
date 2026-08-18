@@ -256,7 +256,7 @@ export default function yueJiDataTest(): void {
       expect(deferred.nextReviewAt).assertEqual(updatedAt + 24 * 60 * 60 * 1000);
       expect(scheduler.isDue(card, updatedAt)).assertFalse();
       expect(scheduler.isDue(card, deferred.nextReviewAt)).assertTrue();
-      expect(scheduler.valuesForStatus(card, 'TO_REVIEW', updatedAt + 1000).nextReviewAt)
+      expect(scheduler.valuesForEdit(card, 'TO_REVIEW', updatedAt + 1000).nextReviewAt)
         .assertEqual(deferred.nextReviewAt);
     });
 
@@ -277,7 +277,7 @@ export default function yueJiDataTest(): void {
       const card = createEvidence();
       const day = 24 * 60 * 60 * 1000;
       let reviewedAt = 1000000;
-      let schedule = scheduler.valuesForStatus(card, 'MASTERED', reviewedAt);
+      let schedule = scheduler.valuesForReviewAction(card, 'MASTERED', reviewedAt);
       expect(schedule.reviewCount).assertEqual(1);
       expect(schedule.nextReviewAt).assertEqual(reviewedAt + day);
 
@@ -286,7 +286,7 @@ export default function yueJiDataTest(): void {
       card.nextReviewAt = schedule.nextReviewAt;
       card.reviewCount = schedule.reviewCount;
       reviewedAt = schedule.nextReviewAt;
-      schedule = scheduler.valuesForStatus(card, 'MASTERED', reviewedAt);
+      schedule = scheduler.valuesForReviewAction(card, 'MASTERED', reviewedAt);
       expect(schedule.reviewCount).assertEqual(2);
       expect(schedule.nextReviewAt).assertEqual(reviewedAt + 3 * day);
 
@@ -294,7 +294,7 @@ export default function yueJiDataTest(): void {
       card.nextReviewAt = schedule.nextReviewAt;
       card.reviewCount = schedule.reviewCount;
       reviewedAt = schedule.nextReviewAt;
-      schedule = scheduler.valuesForStatus(card, 'MASTERED', reviewedAt);
+      schedule = scheduler.valuesForReviewAction(card, 'MASTERED', reviewedAt);
       expect(schedule.reviewCount).assertEqual(3);
       expect(schedule.nextReviewAt).assertEqual(reviewedAt + 7 * day);
 
@@ -302,7 +302,7 @@ export default function yueJiDataTest(): void {
       card.nextReviewAt = schedule.nextReviewAt;
       card.reviewCount = schedule.reviewCount;
       reviewedAt = schedule.nextReviewAt;
-      schedule = scheduler.valuesForStatus(card, 'MASTERED', reviewedAt);
+      schedule = scheduler.valuesForReviewAction(card, 'MASTERED', reviewedAt);
       expect(schedule.reviewCount).assertEqual(4);
       expect(schedule.nextReviewAt).assertEqual(reviewedAt + 14 * day);
     });
@@ -315,10 +315,35 @@ export default function yueJiDataTest(): void {
       card.nextReviewAt = 1000 + 24 * 60 * 60 * 1000;
       card.reviewCount = 1;
 
-      const schedule = scheduler.valuesForStatus(card, 'MASTERED', 2000);
+      const schedule = scheduler.valuesForReviewAction(card, 'MASTERED', 2000);
       expect(schedule.lastReviewedAt).assertEqual(card.lastReviewedAt);
       expect(schedule.nextReviewAt).assertEqual(card.nextReviewAt);
       expect(schedule.reviewCount).assertEqual(1);
+    });
+
+    it('does not count editing an overdue mastered card as a review', 0, (): void => {
+      const scheduler = new ReviewScheduler();
+      const card = createEvidence();
+      card.reviewStatus = 'MASTERED';
+      card.lastReviewedAt = 1000;
+      card.nextReviewAt = 2000;
+      card.reviewCount = 2;
+
+      const schedule = scheduler.valuesForEdit(card, 'MASTERED', 5000);
+      expect(schedule.lastReviewedAt).assertEqual(1000);
+      expect(schedule.nextReviewAt).assertEqual(2000);
+      expect(schedule.reviewCount).assertEqual(2);
+    });
+
+    it('records mastery selected while editing a pending card', 0, (): void => {
+      const scheduler = new ReviewScheduler();
+      const card = createEvidence();
+      const reviewedAt = 5000;
+
+      const schedule = scheduler.valuesForEdit(card, 'MASTERED', reviewedAt);
+      expect(schedule.lastReviewedAt).assertEqual(reviewedAt);
+      expect(schedule.reviewCount).assertEqual(1);
+      expect(schedule.nextReviewAt).assertEqual(reviewedAt + 24 * 60 * 60 * 1000);
     });
 
     it('accepts valid stored PDF selections and rejects empty or broken selections', 0, (): void => {

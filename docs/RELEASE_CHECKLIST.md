@@ -35,12 +35,12 @@
 当前无签名产物：
 
 - HAP 路径：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- HAP 大小：337016 bytes
-- HAP SHA-256：`0d2e5d26c812eea737041471b06819dfd47d808b28675e82c3742a2f0323709e`
+- HAP 大小：500388 bytes
+- HAP SHA-256：`39fd6368a05e7683ba3576ed38fd04f8f18539cb6c15bbf23c976c727198c88a`
 - APP 路径：`build/outputs/default/YueJiPC-default-unsigned.app`
-- APP 大小：153097 bytes
-- APP SHA-256：`05212983444f1c088ed8d5825d6159c08dbf7308f3082d8b3bc4b9df158ba8a7`
-- 构建时间：2026 年 8 月 18 日 11:34（Asia/Shanghai）
+- APP 大小：219661 bytes
+- APP SHA-256：`599cfc58b2c670f4c9d1d179d704688faa0cc957c756f9070d91300ffbe4f433`
+- 构建时间：2026 年 8 月 18 日 15:33:46（Asia/Shanghai）
 
 完成发布签名后，必须重新记录已签名产物的文件名、大小和 SHA-256；当前哈希不能作为送审包哈希。
 

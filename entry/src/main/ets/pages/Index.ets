@@ -1465,9 +1465,12 @@ struct Index {
     kind: EvidenceKind,
     color: number,
     reviewStatus: ReviewStatus,
-    updatedAt: number
+    updatedAt: number,
+    reviewAction: boolean
   ): EvidenceCard {
-    const review = this.reviewScheduler.valuesForStatus(card, reviewStatus, updatedAt);
+    const review = reviewAction ?
+      this.reviewScheduler.valuesForReviewAction(card, reviewStatus, updatedAt) :
+      this.reviewScheduler.valuesForEdit(card, reviewStatus, updatedAt);
     return {
       id: card.id,
       documentId: card.documentId,
@@ -1490,7 +1493,7 @@ struct Index {
   private localReviewCard(card: EvidenceCard, updatedAt: number, deferred: boolean): EvidenceCard {
     const review = deferred ?
       this.reviewScheduler.deferValues(card, updatedAt) :
-      this.reviewScheduler.valuesForStatus(card, 'TO_REVIEW', updatedAt);
+      this.reviewScheduler.valuesForReviewAction(card, 'TO_REVIEW', updatedAt);
     return {
       id: card.id,
       documentId: card.documentId,
@@ -1540,7 +1543,16 @@ struct Index {
         color,
         reviewStatus
       );
-      const updatedCard = this.localEvidenceCard(card, note, tags, kind, color, reviewStatus, updatedAt);
+      const updatedCard = this.localEvidenceCard(
+        card,
+        note,
+        tags,
+        kind,
+        color,
+        reviewStatus,
+        updatedAt,
+        false
+      );
       let listReloaded = true;
       try {
         this.evidenceCards = await this.evidenceRepository.listAll();
@@ -1585,7 +1597,8 @@ struct Index {
         card.kind,
         card.color,
         next,
-        updatedAt
+        updatedAt,
+        true
       );
       try {
         this.evidenceCards = await this.evidenceRepository.listAll();
@@ -2080,7 +2093,8 @@ struct Index {
         card.kind,
         card.color,
         status,
-        updatedAt
+        updatedAt,
+        true
       );
       const localUpdatedCard = status === 'TO_REVIEW' ?
         this.localReviewCard(card, updatedAt, true) : updatedCard;
