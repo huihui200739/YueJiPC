@@ -1,5 +1,5 @@
 import relationalStore from '@ohos.data.relationalStore';
-import { DocumentKind, DocumentRecord } from '../model/Models';
+import { DocumentKind, DocumentRecord, EvidenceCard } from '../model/Models';
 import { YueJiDatabase } from './YueJiDatabase';
 
 export class LibraryRepository {
@@ -21,10 +21,101 @@ export class LibraryRepository {
       favorite: record.favorite ? 1 : 0,
       excerpt: record.excerpt,
       note: record.note,
+      content_hash: record.contentHash,
       created_at: record.createdAt,
       last_read_at: record.lastReadAt
     };
     await this.database.getStore().insert('documents', values);
+  }
+
+  async insertWebWithEvidence(record: DocumentRecord, card: EvidenceCard | undefined): Promise<void> {
+    const store = this.database.getStore();
+    const transactionId = await store.beginTrans();
+    try {
+      await store.execute(
+        `INSERT INTO documents
+          (id, kind, title, source, page_count, current_page, tags, favorite, excerpt, note,
+           content_hash, created_at, last_read_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        transactionId,
+        this.documentValues(record)
+      );
+      if (card !== undefined) {
+        await store.execute(
+          `INSERT INTO evidence_cards
+            (id, document_id, quote, page_index, rects_json, note, kind, color, tags, review_status,
+             last_reviewed_at, next_review_at, review_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          transactionId,
+          this.evidenceValues(card)
+        );
+      }
+      await store.commit(transactionId);
+    } catch (error) {
+      await store.rollback(transactionId);
+      throw new Error('Web document transaction failed');
+    }
+  }
+
+  async updateWebWithEvidence(
+    record: DocumentRecord,
+    card: EvidenceCard | undefined,
+    removeCardIds: string[]
+  ): Promise<void> {
+    const store = this.database.getStore();
+    const transactionId = await store.beginTrans();
+    try {
+      await store.execute(
+        `UPDATE documents SET
+          title = ?, source = ?, page_count = ?, current_page = ?, tags = ?, favorite = ?,
+          excerpt = ?, note = ?, content_hash = ?, last_read_at = ?
+          WHERE id = ?`,
+        transactionId,
+        [
+          record.title, record.source, record.pageCount, record.currentPage, record.tags,
+          record.favorite ? 1 : 0, record.excerpt, record.note, record.contentHash, record.lastReadAt, record.id
+        ]
+      );
+      if (card === undefined) {
+        for (const id of removeCardIds) {
+          await store.execute('DELETE FROM evidence_cards WHERE id = ?', transactionId, [id]);
+        }
+      } else {
+        await store.execute(
+          `UPDATE evidence_cards SET
+            quote = ?, page_index = ?, rects_json = ?, note = ?, kind = ?, color = ?,
+            tags = ?, review_status = ?, last_reviewed_at = ?, next_review_at = ?, review_count = ?,
+            updated_at = ?
+            WHERE id = ?`,
+          transactionId,
+          [
+            card.quote, card.pageIndex, card.rectsJson, card.note, card.kind, card.color,
+            card.tags, card.reviewStatus, card.lastReviewedAt, card.nextReviewAt, card.reviewCount,
+            card.updatedAt, card.id
+          ]
+        );
+        if (removeCardIds.length === 0 && card.id.length > 0) {
+          // The caller may be saving the first web evidence card for a legacy record.
+          await store.execute(
+            `INSERT OR IGNORE INTO evidence_cards
+              (id, document_id, quote, page_index, rects_json, note, kind, color, tags, review_status,
+               last_reviewed_at, next_review_at, review_count, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            transactionId,
+            this.evidenceValues(card)
+          );
+        }
+        for (const id of removeCardIds) {
+          if (id !== card.id) {
+            await store.execute('DELETE FROM evidence_cards WHERE id = ?', transactionId, [id]);
+          }
+        }
+      }
+      await store.commit(transactionId);
+    } catch (error) {
+      await store.rollback(transactionId);
+      throw new Error('Web document transaction failed');
+    }
   }
 
   async listAll(): Promise<DocumentRecord[]> {
@@ -87,6 +178,15 @@ export class LibraryRepository {
     const values: relationalStore.ValuesBucket = {
       title: title,
       tags: tags
+    };
+    await this.updateById(id, values);
+  }
+
+  async updatePdfSourceFingerprint(id: string, source: string, contentHash: string): Promise<void> {
+    const values: relationalStore.ValuesBucket = {
+      source: source,
+      content_hash: contentHash,
+      last_read_at: Date.now()
     };
     await this.updateById(id, values);
   }
@@ -154,8 +254,25 @@ export class LibraryRepository {
       favorite: resultSet.getLong(resultSet.getColumnIndex('favorite')) === 1,
       excerpt: resultSet.getString(resultSet.getColumnIndex('excerpt')),
       note: resultSet.getString(resultSet.getColumnIndex('note')),
+      contentHash: resultSet.getString(resultSet.getColumnIndex('content_hash')),
       createdAt: resultSet.getLong(resultSet.getColumnIndex('created_at')),
       lastReadAt: resultSet.getLong(resultSet.getColumnIndex('last_read_at'))
     };
+  }
+
+  private documentValues(record: DocumentRecord): relationalStore.ValueType[] {
+    return [
+      record.id, record.kind, record.title, record.source, record.pageCount, record.currentPage,
+      record.tags, record.favorite ? 1 : 0, record.excerpt, record.note, record.contentHash,
+      record.createdAt, record.lastReadAt
+    ];
+  }
+
+  private evidenceValues(card: EvidenceCard): relationalStore.ValueType[] {
+    return [
+      card.id, card.documentId, card.quote, card.pageIndex, card.rectsJson, card.note,
+      card.kind, card.color, card.tags, card.reviewStatus, card.lastReviewedAt, card.nextReviewAt,
+      card.reviewCount, card.createdAt, card.updatedAt
+    ];
   }
 }

@@ -5,16 +5,23 @@ import { unifiedDataChannel, uniformDataStruct } from '@kit.ArkData';
 import { KeyCode } from '@kit.InputKit';
 import { PdfView, pdfService, pdfViewManager } from '@kit.PDFKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { CollectionRepository } from '../data/CollectionRepository';
 import { EvidenceRepository } from '../data/EvidenceRepository';
 import { LibraryRepository } from '../data/LibraryRepository';
 import { YueJiDatabase } from '../data/YueJiDatabase';
 import {
   AppSettings,
+  BackupPayload,
+  CollectionItem,
+  CollectionItemKind,
+  CollectionRecord,
   createId,
   DocumentRecord,
   EvidenceCard,
   EvidenceKind,
   MainView,
+  MAX_COLLECTION_DESCRIPTION_LENGTH,
+  MAX_COLLECTION_NAME_LENGTH,
   MAX_EXCERPT_LENGTH,
   MAX_NOTE_LENGTH,
   MAX_QUOTE_LENGTH,
@@ -26,19 +33,28 @@ import {
   ReviewStatus,
   StoredPdfRect,
   StoredSelection,
-  tagList
+  WorkspaceState,
+  tagList,
+  isValidStoredSelectionJson
 } from '../model/Models';
+import { BackupService, DeletedPdfArchive } from '../services/BackupService';
+import { DataHealthIssue, DataHealthReport, DataHealthService } from '../services/DataHealthService';
+import { DiagnosticService } from '../services/DiagnosticService';
 import { ExportService } from '../services/ExportService';
 import { ImportService, ImportedPdf } from '../services/ImportService';
 import { LinkService, WebDraft } from '../services/LinkService';
+import { ReviewScheduler } from '../services/ReviewScheduler';
 import { SettingsService } from '../services/SettingsService';
+import { WorkspaceService } from '../services/WorkspaceService';
+import { FileFingerprintService } from '../services/FileFingerprintService';
 
 const LOG_DOMAIN: number = 0x59A1;
 const LOG_TAG: string = 'YueJiReader';
 
 type LibraryScope = 'ALL' | 'RECENT' | 'FAVORITE';
 type ReviewFilter = 'ALL' | 'TO_REVIEW' | 'MASTERED';
-type DeleteTargetKind = 'NONE' | 'DOCUMENT' | 'EVIDENCE';
+type DeleteTargetKind = 'NONE' | 'DOCUMENT' | 'EVIDENCE' | 'COLLECTION';
+type CollectionTargetKind = 'NONE' | CollectionItemKind;
 type EditorDraftKind = 'NONE' | 'WEB' | 'PDF' | 'EVIDENCE';
 type EditorDraftAction =
   'NONE' |
@@ -51,7 +67,8 @@ type EditorDraftAction =
   'IMPORT_DROPPED_PDF' |
   'DELETE_DOCUMENT' |
   'RETURN_TO_EVIDENCE' |
-  'START_REVIEW_SESSION';
+  'START_REVIEW_SESSION' |
+  'RESTORE_DATA';
 type EvidenceDraftAction =
   'NONE' |
   'OPEN_DOCUMENT' |
@@ -63,7 +80,8 @@ type EvidenceDraftAction =
   'START_REVIEW_SESSION' |
   'SHOW_LIBRARY' |
   'SHOW_REVIEW' |
-  'ADD_WEB';
+  'ADD_WEB' |
+  'RESTORE_DATA';
 
 interface ThumbnailRecord {
   pageIndex: number;
@@ -80,6 +98,9 @@ struct Index {
   @State private reviewFilter: ReviewFilter = 'ALL';
   @State private documents: DocumentRecord[] = [];
   @State private evidenceCards: EvidenceCard[] = [];
+  @State private collections: CollectionRecord[] = [];
+  @State private collectionItems: CollectionItem[] = [];
+  @State private selectedCollectionId: string = '';
   @State private activeDocumentId: string = '';
   @State private documentPath: string = '';
   @State private pageCount: number = 0;
@@ -145,6 +166,27 @@ struct Index {
   @State private reviewSessionMasteredCount: number = 0;
   @State private isReviewSessionUpdating: boolean = false;
   @State private reviewSessionSourceOpen: boolean = false;
+  @State private showCollectionManager: boolean = false;
+  @State private editingCollectionId: string = '';
+  @State private collectionName: string = '';
+  @State private collectionDescription: string = '';
+  @State private isSavingCollection: boolean = false;
+  @State private collectionTargetKind: CollectionTargetKind = 'NONE';
+  @State private collectionTargetId: string = '';
+  @State private isUpdatingCollectionItem: boolean = false;
+  @State private showRestoreConfirm: boolean = false;
+  @State private isRestoring: boolean = false;
+  @State private batchMode: boolean = false;
+  @State private selectedEvidenceIds: string[] = [];
+  @State private batchTags: string = '';
+  @State private isBatchUpdating: boolean = false;
+  @State private showCompareView: boolean = false;
+  @State private duplicateWebDocumentId: string = '';
+  @State private showDuplicateWebConfirm: boolean = false;
+  @State private showHealthPanel: boolean = false;
+  @State private healthReport: DataHealthReport | undefined = undefined;
+  @State private isCheckingHealth: boolean = false;
+  @State private isExportingDiagnostic: boolean = false;
 
   private pdfController: pdfViewManager.PdfController = new pdfViewManager.PdfController();
   private selectedRects: Array<pdfViewManager.SelectedRects> = [];
@@ -156,13 +198,23 @@ struct Index {
   private searchGeneration: number = 0;
   private thumbnailGeneration: number = 0;
   private reviewSessionSourceRightSidebarOpen: boolean = true;
+  private pendingBackup: BackupPayload | undefined = undefined;
   private database: YueJiDatabase = new YueJiDatabase();
   private libraryRepository: LibraryRepository = new LibraryRepository(this.database);
   private evidenceRepository: EvidenceRepository = new EvidenceRepository(this.database);
+  private collectionRepository: CollectionRepository = new CollectionRepository(this.database);
   private importService: ImportService = new ImportService();
   private linkService: LinkService = new LinkService();
   private exportService: ExportService = new ExportService();
+  private backupService: BackupService = new BackupService();
+  private dataHealthService: DataHealthService = new DataHealthService();
+  private diagnosticService: DiagnosticService = new DiagnosticService();
   private settingsService: SettingsService = new SettingsService();
+  private workspaceService: WorkspaceService = new WorkspaceService();
+  private fingerprintService: FileFingerprintService = new FileFingerprintService();
+  private reviewScheduler: ReviewScheduler = new ReviewScheduler();
+  private workspaceReady: boolean = false;
+  private workspaceSaveTask: Promise<void> | undefined = undefined;
 
   aboutToAppear(): void {
     this.pdfController.registerPageChangedListener((pageIndex: number): void => {
@@ -176,9 +228,11 @@ struct Index {
       if (this.activeDocumentId.length > 0 && !this.isLoading) {
         this.scheduleReadPosition(pageIndex);
       }
+      this.saveWorkspace();
     });
     this.pdfController.registerScaleChangedListener((scale: number): void => {
       this.zoomPercent = Math.round(scale * 100);
+      this.saveWorkspace();
     });
     this.pdfController.registerTextSelectedListener((selection: pdfViewManager.TextSelectedParam): void => {
       this.handleTextSelection(selection);
@@ -190,6 +244,7 @@ struct Index {
     this.statusGeneration++;
     this.readPositionGeneration++;
     this.flushPendingReadPosition();
+    this.saveWorkspace();
     if (this.documentPath.length > 0) {
       this.pdfController.releaseDocument();
     }
@@ -343,6 +398,9 @@ struct Index {
     if (this.evidenceDraftAction === 'ADD_WEB') {
       return '添加网页资料';
     }
+    if (this.evidenceDraftAction === 'RESTORE_DATA') {
+      return '恢复本地数据';
+    }
     return '继续当前操作';
   }
 
@@ -421,6 +479,9 @@ struct Index {
       return;
     } else if (action === 'ADD_WEB') {
       this.startAddWeb();
+      return;
+    } else if (action === 'RESTORE_DATA') {
+      await this.restoreData();
       return;
     }
     this.statusMessage = '目标内容已不存在，证据卡草稿已放弃';
@@ -602,6 +663,9 @@ struct Index {
     } else if (action === 'START_REVIEW_SESSION') {
       this.requestStartReviewSession();
       return;
+    } else if (action === 'RESTORE_DATA') {
+      await this.restoreData();
+      return;
     } else if (action === 'CLOSE') {
       this.showTransientStatus('已放弃未保存的修改');
       return;
@@ -632,6 +696,9 @@ struct Index {
   }
 
   private editorDraftMessage(): string {
+    if (this.editorDraftAction === 'RESTORE_DATA') {
+      return '当前修改尚未保存。恢复备份会替换本机资料、证据卡和主题集合。';
+    }
     if (this.editorDraftKind === 'WEB') {
       return '标题、网址、摘录、笔记或标签中的修改尚未保存。';
     }
@@ -660,6 +727,7 @@ struct Index {
     try {
       await this.database.initialize(context);
       await this.settingsService.initialize(context);
+      await this.workspaceService.initialize(context);
       const settings = await this.settingsService.load();
       this.darkMode = settings.darkMode;
       this.focusMode = settings.focusMode;
@@ -667,18 +735,188 @@ struct Index {
       this.rightSidebarOpen = settings.rightSidebarOpen;
       this.evidenceColor = settings.defaultHighlightColor;
       await this.reloadData();
+      const workspace = await this.workspaceService.load();
+      const workspaceMessage = await this.restoreWorkspace(workspace);
+      this.workspaceReady = true;
       this.isReady = true;
-      this.showTransientStatus(this.documents.length > 0 ?
-        `已恢复 ${this.documents.length} 份资料与 ${this.evidenceCards.length} 张证据卡` :
-        '资料库已就绪，导入一份 PDF 或添加网页资料');
+      this.refreshHealthReport();
+      this.showTransientStatus(workspaceMessage.length > 0 ? workspaceMessage :
+        this.documents.length > 0 ?
+          `已恢复 ${this.documents.length} 份资料与 ${this.evidenceCards.length} 张证据卡` :
+          '资料库已就绪，导入一份 PDF 或添加网页资料');
     } catch (error) {
       this.statusMessage = '本地资料库初始化失败，请检查存储空间后重试';
     }
   }
 
+  private async restoreWorkspace(workspace: WorkspaceState): Promise<string> {
+    this.mainView = workspace.mainView;
+    this.libraryScope = workspace.libraryScope;
+    this.reviewFilter = workspace.reviewFilter;
+    this.selectedCollectionId = workspace.selectedCollectionId;
+    this.zoomPercent = workspace.zoomPercent;
+    this.librarySearch = workspace.librarySearch;
+    this.selectedTag = workspace.selectedTag;
+    this.reviewSearch = workspace.reviewSearch;
+    this.reviewSelectedTag = workspace.reviewSelectedTag;
+    this.searchText = workspace.searchText;
+
+    if (this.selectedCollectionId.length > 0 &&
+      this.collectionById(this.selectedCollectionId) === undefined) {
+      this.selectedCollectionId = '';
+    }
+    const active = this.documentById(workspace.activeDocumentId);
+    if (workspace.mainView !== 'READER' || active === undefined || active.kind !== 'PDF') {
+      if (workspace.mainView === 'READER') {
+        this.mainView = 'LIBRARY';
+        this.activeDocumentId = '';
+        return workspace.activeDocumentId.length > 0 ?
+          '上次阅读资料不可用，已回到资料库' : '';
+      }
+      return '';
+    }
+    if (this.isPdfMissing(active)) {
+      this.mainView = 'LIBRARY';
+      this.activeDocumentId = '';
+      return `上次阅读的“${active.title}”PDF 副本缺失，请从资料库重新导入`;
+    }
+    await this.openDocument(active);
+    if (this.documentPath.length > 0) {
+      this.pdfController.setPageZoom(this.zoomPercent / 100);
+      this.searchText = workspace.searchText;
+    }
+    return this.documentPath.length > 0 ? `已恢复上次阅读位置：${active.title}` :
+      '上次阅读资料暂时无法打开，已回到资料库';
+  }
+
+  private workspaceState(): WorkspaceState {
+    return {
+      mainView: this.mainView,
+      libraryScope: this.libraryScope,
+      reviewFilter: this.reviewFilter,
+      activeDocumentId: this.activeDocumentId,
+      selectedCollectionId: this.selectedCollectionId,
+      zoomPercent: this.zoomPercent,
+      librarySearch: this.librarySearch,
+      selectedTag: this.selectedTag,
+      reviewSearch: this.reviewSearch,
+      reviewSelectedTag: this.reviewSelectedTag,
+      searchText: this.searchText,
+      savedAt: Date.now()
+    };
+  }
+
+  private saveWorkspace(): void {
+    if (!this.workspaceReady) {
+      return;
+    }
+    const state = this.workspaceState();
+    this.workspaceSaveTask = (this.workspaceSaveTask ?? Promise.resolve())
+      .then((): Promise<void> => this.workspaceService.save(state))
+      .catch((): void => {
+        if (this.isReady) {
+          this.statusMessage = '阅读现场暂时无法保存，请检查本地存储空间';
+        }
+      });
+  }
+
   private async reloadData(): Promise<void> {
+    await this.migrateLegacyWebEvidenceCards();
     this.documents = await this.libraryRepository.listAll();
     this.evidenceCards = await this.evidenceRepository.listAll();
+    this.collections = await this.collectionRepository.listAll();
+    this.collectionItems = await this.collectionRepository.listAllItems();
+    if (this.selectedCollectionId.length > 0 &&
+      !this.collections.some((collection: CollectionRecord): boolean =>
+        collection.id === this.selectedCollectionId)) {
+      this.selectedCollectionId = '';
+    }
+  }
+
+  private createWebEvidenceCard(
+    document: DocumentRecord,
+    quote: string,
+    note: string,
+    tags: string,
+    reviewStatus: ReviewStatus = 'TO_REVIEW',
+    createdAt: number = Date.now()
+  ): EvidenceCard {
+    return {
+      id: createId('evidence'),
+      documentId: document.id,
+      quote: quote.trim(),
+      pageIndex: 0,
+      rectsJson: '[]',
+      note: note.trim(),
+      kind: 'QUOTE',
+      color: 0xFFFFD95A,
+      tags: normalizeTags(tags),
+      reviewStatus: reviewStatus,
+      lastReviewedAt: 0,
+      nextReviewAt: 0,
+      reviewCount: 0,
+      createdAt: createdAt,
+      updatedAt: Date.now()
+    };
+  }
+
+  private async migrateLegacyWebEvidenceCards(): Promise<void> {
+    const documents = await this.libraryRepository.listAll();
+    const cards = await this.evidenceRepository.listAll();
+    for (const document of documents) {
+      if (document.kind !== 'WEB' || document.excerpt.trim().length === 0) {
+        continue;
+      }
+      const hasWebEvidence = cards.some((card: EvidenceCard): boolean =>
+        card.documentId === document.id && card.kind === 'QUOTE');
+      if (!hasWebEvidence) {
+        await this.evidenceRepository.insert(this.createWebEvidenceCard(
+          document,
+          document.excerpt,
+          document.note,
+          document.tags,
+          'TO_REVIEW',
+          document.createdAt
+        ));
+      }
+    }
+  }
+
+  private async syncWebEvidenceCard(
+    document: DocumentRecord,
+    quote: string,
+    note: string,
+    tags: string
+  ): Promise<void> {
+    const cards = (await this.evidenceRepository.listByDocument(document.id))
+      .filter((card: EvidenceCard): boolean => card.kind === 'QUOTE');
+    const trimmedQuote = quote.trim();
+    if (trimmedQuote.length === 0) {
+      for (const card of cards) {
+        await this.evidenceRepository.delete(card.id);
+      }
+      return;
+    }
+    const existing = cards[0];
+    if (existing === undefined) {
+      await this.evidenceRepository.insert(this.createWebEvidenceCard(
+        document,
+        trimmedQuote,
+        note,
+        tags
+      ));
+      return;
+    }
+    await this.evidenceRepository.updateWebCard(
+      existing.id,
+      trimmedQuote,
+      note.trim(),
+      normalizeTags(tags),
+      existing.reviewStatus
+    );
+    for (let index = 1; index < cards.length; index++) {
+      await this.evidenceRepository.delete(cards[index].id);
+    }
   }
 
   private activeDocument(): DocumentRecord | undefined {
@@ -691,6 +929,11 @@ struct Index {
 
   private isPdfMissing(document: DocumentRecord): boolean {
     return document.kind === 'PDF' && !this.importService.fileExists(document.source);
+  }
+
+  private missingPdfCount(documents: DocumentRecord[]): number {
+    return documents.filter((document: DocumentRecord): boolean =>
+      document.kind === 'PDF' && !this.importService.fileExists(document.source)).length;
   }
 
   private documentTitle(id: string): string {
@@ -954,7 +1197,8 @@ struct Index {
     }
     this.isLoading = true;
     this.statusMessage = `请选择“${record.title}”对应的原始 PDF…`;
-    let replacementValidated = false;
+    const temporaryPath = `${record.source}.restore-${Date.now()}.tmp`;
+    let movedToSource = false;
     try {
       const uri = await this.importService.choosePdfUri(context);
       if (uri === undefined) {
@@ -962,33 +1206,41 @@ struct Index {
         return;
       }
       this.statusMessage = `正在校验“${record.title}”…`;
-      await this.importService.copyPdfToPath(uri, record.source);
+      await this.importService.copyPdfToPath(uri, temporaryPath);
       const validationController = new pdfViewManager.PdfController();
       let validationResult: pdfService.ParseResult;
       try {
-        validationResult = await validationController.loadDocument(record.source);
+        validationResult = await validationController.loadDocument(temporaryPath);
       } catch (error) {
-        await this.importService.removeImportedPdf(record.source);
+        await this.importService.removeImportedPdf(temporaryPath);
         hilog.error(LOG_DOMAIN, LOG_TAG, 'Restored PDF parse failed: %{public}s', JSON.stringify(error));
         this.statusMessage = '重新导入失败，所选 PDF 无法读取';
         return;
       }
       if (validationResult !== pdfService.ParseResult.PARSE_SUCCESS) {
         validationController.releaseDocument();
-        await this.importService.removeImportedPdf(record.source);
+        await this.importService.removeImportedPdf(temporaryPath);
         this.statusMessage = this.parseErrorMessage(validationResult);
         return;
       }
       const actualPageCount = validationController.getPageCount();
       validationController.releaseDocument();
       if (record.pageCount > 0 && actualPageCount !== record.pageCount) {
-        await this.importService.removeImportedPdf(record.source);
+        await this.importService.removeImportedPdf(temporaryPath);
         this.statusMessage =
           `所选 PDF 为 ${actualPageCount} 页，与原资料 ${record.pageCount} 页不一致，请选择原文件`;
         return;
       }
-      replacementValidated = true;
+      const contentHash = await this.fingerprintService.sha256(temporaryPath);
+      if (record.contentHash.length > 0 && record.contentHash !== contentHash) {
+        await this.importService.removeImportedPdf(temporaryPath);
+        this.statusMessage = '页数一致但文件内容不同，请选择原始 PDF';
+        return;
+      }
+      await fs.moveFile(temporaryPath, record.source);
+      movedToSource = true;
       const restoredPage = Math.min(Math.max(0, record.currentPage), Math.max(0, actualPageCount - 1));
+      await this.libraryRepository.updatePdfSourceFingerprint(record.id, record.source, contentHash);
       await this.libraryRepository.updatePdfMetadata(record.id, actualPageCount, restoredPage);
       this.updateLocalDocument(record.id, restoredPage, actualPageCount);
       await this.flushReadPositionBeforeDocumentChange();
@@ -1011,11 +1263,13 @@ struct Index {
       );
     } catch (error) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'Missing PDF restore failed: %{public}s', JSON.stringify(error));
-      if (!replacementValidated && this.importService.fileExists(record.source)) {
+      if (movedToSource && this.importService.fileExists(record.source)) {
         await this.importService.removeImportedPdf(record.source);
+      } else if (this.importService.fileExists(temporaryPath)) {
+        await this.importService.removeImportedPdf(temporaryPath);
       }
-      this.statusMessage = replacementValidated ?
-        '本地副本已恢复，但资料状态暂时无法更新，请重新打开' :
+      this.statusMessage = movedToSource ?
+        'PDF 副本已校验，但资料状态暂时无法更新，原资料记录和证据卡未改变' :
         '重新导入失败，资料记录和证据卡未受影响';
     } finally {
       this.isLoading = false;
@@ -1044,27 +1298,12 @@ struct Index {
   }
 
   private deserializeSelection(value: string): StoredSelection[] {
-    if (value.length === 0) {
+    if (!isValidStoredSelectionJson(value)) {
       return [];
     }
     try {
       const parsed = JSON.parse(value) as StoredSelection[];
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-      return parsed.filter((stored: StoredSelection): boolean => {
-        if (!Number.isInteger(stored.pageIndex) || stored.pageIndex < 0 ||
-          !Array.isArray(stored.rectArray) || stored.rectArray.length === 0) {
-          return false;
-        }
-        return stored.rectArray.every((rect: StoredPdfRect): boolean =>
-          Number.isFinite(rect.left) &&
-          Number.isFinite(rect.top) &&
-          Number.isFinite(rect.right) &&
-          Number.isFinite(rect.bottom) &&
-          rect.right >= rect.left &&
-          rect.bottom >= rect.top);
-      });
+      return parsed;
     } catch (error) {
       return [];
     }
@@ -1148,6 +1387,9 @@ struct Index {
       color: this.evidenceColor,
       tags: tags,
       reviewStatus: 'TO_REVIEW',
+      lastReviewedAt: 0,
+      nextReviewAt: 0,
+      reviewCount: 0,
       createdAt: now,
       updatedAt: now
     };
@@ -1225,6 +1467,7 @@ struct Index {
     reviewStatus: ReviewStatus,
     updatedAt: number
   ): EvidenceCard {
+    const review = this.reviewScheduler.valuesForStatus(card, reviewStatus, updatedAt);
     return {
       id: card.id,
       documentId: card.documentId,
@@ -1236,6 +1479,32 @@ struct Index {
       color: color,
       tags: tags,
       reviewStatus: reviewStatus,
+      lastReviewedAt: review.lastReviewedAt,
+      nextReviewAt: review.nextReviewAt,
+      reviewCount: review.reviewCount,
+      createdAt: card.createdAt,
+      updatedAt: updatedAt
+    };
+  }
+
+  private localReviewCard(card: EvidenceCard, updatedAt: number, deferred: boolean): EvidenceCard {
+    const review = deferred ?
+      this.reviewScheduler.deferValues(card, updatedAt) :
+      this.reviewScheduler.valuesForStatus(card, 'TO_REVIEW', updatedAt);
+    return {
+      id: card.id,
+      documentId: card.documentId,
+      quote: card.quote,
+      pageIndex: card.pageIndex,
+      rectsJson: card.rectsJson,
+      note: card.note,
+      kind: card.kind,
+      color: card.color,
+      tags: card.tags,
+      reviewStatus: 'TO_REVIEW',
+      lastReviewedAt: review.lastReviewedAt,
+      nextReviewAt: review.nextReviewAt,
+      reviewCount: review.reviewCount,
       createdAt: card.createdAt,
       updatedAt: updatedAt
     };
@@ -1442,6 +1711,7 @@ struct Index {
     const nextZoom = Math.max(50, Math.min(400, this.zoomPercent + delta));
     this.pdfController.setPageZoom(nextZoom / 100);
     this.zoomPercent = nextZoom;
+    this.saveWorkspace();
   }
 
   private goToPage(value: string): void {
@@ -1542,7 +1812,27 @@ struct Index {
 
   private reviewCount(filter: ReviewFilter): number {
     return this.evidenceCards.filter((card: EvidenceCard): boolean =>
-      filter === 'ALL' || card.reviewStatus === filter).length;
+      this.collectionMatchesEvidence(card) &&
+      (filter === 'ALL' || card.reviewStatus === filter)).length;
+  }
+
+  private isReviewDue(card: EvidenceCard): boolean {
+    return this.reviewScheduler.isDue(card, Date.now());
+  }
+
+  private reviewDateLabel(timestamp: number): string {
+    if (timestamp <= 0) {
+      return '立即复习';
+    }
+    const date = new Date(timestamp);
+    return `下次复习 ${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+
+  private reviewScheduleLabel(card: EvidenceCard): string {
+    if (card.reviewStatus === 'TO_REVIEW') {
+      return card.nextReviewAt > Date.now() ? this.reviewDateLabel(card.nextReviewAt) : '今天待复习';
+    }
+    return card.nextReviewAt > Date.now() ? this.reviewDateLabel(card.nextReviewAt) : '已到期，可再次复习';
   }
 
   private evidenceKindLabel(kind: EvidenceKind): string {
@@ -1615,6 +1905,9 @@ struct Index {
     const keyword = this.librarySearch.trim().toLowerCase();
     const recentLimit = Date.now() - 1000 * 60 * 60 * 24 * 30;
     return this.documents.filter((document: DocumentRecord): boolean => {
+      if (!this.collectionMatchesDocument(document.id)) {
+        return false;
+      }
       if (this.libraryScope === 'FAVORITE' && !document.favorite) {
         return false;
       }
@@ -1631,13 +1924,24 @@ struct Index {
       if (keyword.length === 0) {
         return true;
       }
+      const documentEvidence = this.evidenceCards.filter((card: EvidenceCard): boolean =>
+        card.documentId === document.id);
       return document.title.toLowerCase().includes(keyword) ||
         document.tags.toLowerCase().includes(keyword) ||
-        document.source.toLowerCase().includes(keyword);
+        document.source.toLowerCase().includes(keyword) ||
+        document.excerpt.toLowerCase().includes(keyword) ||
+        document.note.toLowerCase().includes(keyword) ||
+        documentEvidence.some((card: EvidenceCard): boolean =>
+          card.quote.toLowerCase().includes(keyword) ||
+          card.note.toLowerCase().includes(keyword) ||
+          card.tags.toLowerCase().includes(keyword));
     });
   }
 
   private matchesReviewQuery(card: EvidenceCard): boolean {
+    if (!this.collectionMatchesEvidence(card)) {
+      return false;
+    }
     const keyword = this.reviewSearch.trim().toLowerCase();
     if (this.reviewSelectedTag.length > 0 && !tagList(card.tags).includes(this.reviewSelectedTag)) {
       return false;
@@ -1663,10 +1967,12 @@ struct Index {
   private reviewQueueCards(): EvidenceCard[] {
     return this.evidenceCards
       .filter((card: EvidenceCard): boolean =>
-        card.reviewStatus === 'TO_REVIEW' && this.matchesReviewQuery(card))
+        this.isReviewDue(card) && this.matchesReviewQuery(card))
       .sort((left: EvidenceCard, right: EvidenceCard): number => {
-        const updatedDifference = left.updatedAt - right.updatedAt;
-        return updatedDifference !== 0 ? updatedDifference : left.createdAt - right.createdAt;
+        const leftDue = left.nextReviewAt <= 0 ? 0 : left.nextReviewAt;
+        const rightDue = right.nextReviewAt <= 0 ? 0 : right.nextReviewAt;
+        const dueDifference = leftDue - rightDue;
+        return dueDifference !== 0 ? dueDifference : left.createdAt - right.createdAt;
       });
   }
 
@@ -1764,7 +2070,9 @@ struct Index {
     this.isReviewSessionUpdating = true;
     this.statusMessage = status === 'MASTERED' ? '正在标记掌握…' : '正在保留待复习状态…';
     try {
-      const updatedAt = await this.evidenceRepository.setReviewStatus(card.id, status);
+      const updatedAt = status === 'TO_REVIEW' ?
+        await this.evidenceRepository.deferReview(card.id) :
+        await this.evidenceRepository.setReviewStatus(card.id, status);
       const updatedCard = this.localEvidenceCard(
         card,
         card.note,
@@ -1774,12 +2082,14 @@ struct Index {
         status,
         updatedAt
       );
+      const localUpdatedCard = status === 'TO_REVIEW' ?
+        this.localReviewCard(card, updatedAt, true) : updatedCard;
       let listReloaded = true;
       try {
         this.evidenceCards = await this.evidenceRepository.listAll();
       } catch (error) {
         listReloaded = false;
-        this.replaceLocalEvidenceCard(updatedCard);
+        this.replaceLocalEvidenceCard(localUpdatedCard);
       }
       this.reviewSessionReviewedCount += 1;
       if (status === 'MASTERED') {
@@ -1844,6 +2154,7 @@ struct Index {
     this.mainView = 'LIBRARY';
     this.libraryScope = scope;
     this.closeCompactNavigation();
+    this.saveWorkspace();
     this.showContextStatus();
   }
 
@@ -1853,30 +2164,557 @@ struct Index {
     }
     this.mainView = 'REVIEW';
     this.closeCompactNavigation();
+    this.saveWorkspace();
     this.showContextStatus();
   }
 
   private hasLibraryFilters(): boolean {
-    return this.librarySearch.trim().length > 0 || this.selectedTag.length > 0;
+    return this.librarySearch.trim().length > 0 ||
+      this.selectedTag.length > 0 ||
+      this.selectedCollectionId.length > 0;
   }
 
   private clearLibraryFilters(): void {
     this.librarySearch = '';
     this.selectedTag = '';
+    this.selectedCollectionId = '';
+    this.saveWorkspace();
     this.showTransientStatus('已清除资料筛选');
   }
 
   private hasReviewFilters(): boolean {
     return this.reviewSearch.trim().length > 0 ||
       this.reviewSelectedTag.length > 0 ||
+      this.selectedCollectionId.length > 0 ||
       this.reviewFilter !== 'ALL';
   }
 
   private clearReviewFilters(): void {
     this.reviewSearch = '';
     this.reviewSelectedTag = '';
+    this.selectedCollectionId = '';
     this.reviewFilter = 'ALL';
+    this.clearBatchSelection();
+    this.saveWorkspace();
     this.showTransientStatus('已清除复习筛选');
+  }
+
+  private collectionById(id: string): CollectionRecord | undefined {
+    return this.collections.find((collection: CollectionRecord): boolean => collection.id === id);
+  }
+
+  private collectionNameFor(id: string): string {
+    const collection = this.collectionById(id);
+    return collection === undefined ? '未命名集合' : collection.name;
+  }
+
+  private collectionHasItem(collectionId: string, itemId: string, itemKind: CollectionItemKind): boolean {
+    return this.collectionItems.some((item: CollectionItem): boolean =>
+      item.collectionId === collectionId && item.itemId === itemId && item.itemKind === itemKind);
+  }
+
+  private collectionItemCount(collectionId: string): number {
+    return this.collectionItems.filter((item: CollectionItem): boolean =>
+      item.collectionId === collectionId).length;
+  }
+
+  private collectionMatchesDocument(documentId: string): boolean {
+    return this.selectedCollectionId.length === 0 ||
+      this.collectionHasItem(this.selectedCollectionId, documentId, 'DOCUMENT') ||
+      this.evidenceCards.some((card: EvidenceCard): boolean =>
+        card.documentId === documentId &&
+        this.collectionHasItem(this.selectedCollectionId, card.id, 'EVIDENCE'));
+  }
+
+  private collectionMatchesEvidence(card: EvidenceCard): boolean {
+    return this.selectedCollectionId.length === 0 ||
+      this.collectionHasItem(this.selectedCollectionId, card.id, 'EVIDENCE') ||
+      this.collectionHasItem(this.selectedCollectionId, card.documentId, 'DOCUMENT');
+  }
+
+  private collectionTargetSelected(collectionId: string): boolean {
+    return this.collectionTargetKind !== 'NONE' &&
+      this.collectionHasItem(collectionId, this.collectionTargetId, this.collectionTargetKind);
+  }
+
+  private startCollectionManager(): void {
+    this.showCollectionManager = true;
+    this.editingCollectionId = '';
+    this.collectionName = '';
+    this.collectionDescription = '';
+    this.showContextStatus('正在管理主题集合');
+  }
+
+  private startEditCollection(collection: CollectionRecord): void {
+    this.editingCollectionId = collection.id;
+    this.collectionName = collection.name;
+    this.collectionDescription = collection.description;
+  }
+
+  private cancelCollectionForm(): void {
+    if (this.isSavingCollection) {
+      return;
+    }
+    this.editingCollectionId = '';
+    this.collectionName = '';
+    this.collectionDescription = '';
+  }
+
+  private async saveCollection(): Promise<void> {
+    if (this.isSavingCollection) {
+      return;
+    }
+    const name = this.collectionName.trim();
+    const description = this.collectionDescription.trim();
+    if (name.length === 0) {
+      this.statusMessage = '主题集合名称不能为空';
+      return;
+    }
+    if (!this.validateLength(name, '主题集合名称', MAX_COLLECTION_NAME_LENGTH) ||
+      !this.validateLength(description, '集合说明', MAX_COLLECTION_DESCRIPTION_LENGTH)) {
+      return;
+    }
+    this.isSavingCollection = true;
+    try {
+      if (this.editingCollectionId.length === 0) {
+        const now = Date.now();
+        await this.collectionRepository.insert({
+          id: createId('collection'),
+          name: name,
+          description: description,
+          createdAt: now,
+          updatedAt: now
+        });
+        await this.reloadData();
+        this.cancelCollectionForm();
+        this.showTransientStatus(`已创建主题集合“${name}”`);
+      } else {
+        await this.collectionRepository.update(this.editingCollectionId, name, description);
+        await this.reloadData();
+        this.cancelCollectionForm();
+        this.showTransientStatus(`已更新主题集合“${name}”`);
+      }
+    } catch (error) {
+      this.statusMessage = error instanceof Error && error.message === 'Collection name already exists' ?
+        '主题集合名称已存在，请换一个名称' :
+        '主题集合保存失败，请检查本地存储空间';
+    } finally {
+      this.isSavingCollection = false;
+    }
+  }
+
+  private selectCollection(id: string): void {
+    this.selectedCollectionId = id;
+    this.libraryScope = 'ALL';
+    this.librarySearch = '';
+    this.selectedEvidenceIds = [];
+    this.showCompareView = false;
+    this.saveWorkspace();
+    this.showTransientStatus(id.length === 0 ? '已显示全部资料' : `已筛选集合“${this.collectionNameFor(id)}”`);
+  }
+
+  private startAddToCollection(itemId: string, itemKind: CollectionItemKind): void {
+    if (this.collections.length === 0) {
+      this.startCollectionManager();
+      this.statusMessage = '请先创建一个主题集合，再加入资料或证据卡';
+      return;
+    }
+    this.collectionTargetId = itemId;
+    this.collectionTargetKind = itemKind;
+  }
+
+  private closeCollectionPicker(): void {
+    if (this.isUpdatingCollectionItem) {
+      return;
+    }
+    this.collectionTargetId = '';
+    this.collectionTargetKind = 'NONE';
+  }
+
+  private async toggleCollectionItem(collection: CollectionRecord): Promise<void> {
+    if (this.isUpdatingCollectionItem || this.collectionTargetKind === 'NONE' ||
+      this.collectionTargetId.length === 0) {
+      return;
+    }
+    const itemKind = this.collectionTargetKind;
+    const itemId = this.collectionTargetId;
+    this.isUpdatingCollectionItem = true;
+    try {
+      if (this.collectionHasItem(collection.id, itemId, itemKind)) {
+        await this.collectionRepository.removeItem(collection.id, itemId, itemKind);
+        this.showTransientStatus(`已从“${collection.name}”移出`);
+      } else {
+        await this.collectionRepository.addItem(collection.id, itemId, itemKind);
+        this.showTransientStatus(`已加入“${collection.name}”`);
+      }
+      this.collectionItems = await this.collectionRepository.listAllItems();
+    } catch (error) {
+      this.statusMessage = '集合关联保存失败';
+    } finally {
+      this.isUpdatingCollectionItem = false;
+    }
+  }
+
+  private async deleteCollection(collection: CollectionRecord): Promise<void> {
+    try {
+      await this.collectionRepository.delete(collection.id);
+      if (this.selectedCollectionId === collection.id) {
+        this.selectedCollectionId = '';
+      }
+      await this.reloadData();
+      this.showTransientStatus(`已删除主题集合“${collection.name}”`);
+    } catch (error) {
+      this.statusMessage = '主题集合删除失败';
+    }
+  }
+
+  private async backupData(): Promise<void> {
+    const context = this.hostContext();
+    if (context === undefined || !this.isReady || this.isRestoring) {
+      return;
+    }
+    if (this.hasEvidenceDraft() ||
+      this.hasWebEditorDraft() ||
+      this.hasPdfEditorDraft() ||
+      this.hasEvidenceEditorDraft()) {
+      this.statusMessage = '请先保存或放弃当前草稿，再备份本地数据';
+      return;
+    }
+    this.statusMessage = '正在准备本地数据备份…';
+    try {
+      await this.flushReadPositionBeforeDocumentChange();
+      await this.reloadData();
+      const settings = await this.settingsService.load();
+      const payload = this.backupService.buildPayload(
+        this.documents,
+        this.evidenceCards,
+        this.collections,
+        this.collectionItems,
+        settings
+      );
+      const result = await this.backupService.save(context, payload);
+      this.showTransientStatus(result === undefined ?
+        '已取消数据备份' :
+        `已备份 ${this.documents.length} 份资料、${this.evidenceCards.length} 张证据卡`);
+    } catch (error) {
+      this.statusMessage = '数据备份失败，请检查目标位置是否可写';
+    }
+  }
+
+  private refreshHealthReport(openPanel: boolean = false): void {
+    const context = this.hostContext();
+    if (context === undefined || !this.isReady) {
+      return;
+    }
+    this.isCheckingHealth = true;
+    try {
+      this.healthReport = this.dataHealthService.inspect(
+        context,
+        this.documents,
+        this.evidenceCards,
+        this.collections,
+        this.collectionItems
+      );
+      this.showHealthPanel = openPanel;
+      if (openPanel) {
+        this.showContextStatus();
+      }
+    } finally {
+      this.isCheckingHealth = false;
+    }
+  }
+
+  private openHealthPanel(): void {
+    this.refreshHealthReport(true);
+  }
+
+  private healthSummary(): string {
+    if (this.healthReport === undefined || this.healthReport.issueCount === 0) {
+      return '未发现资料库结构问题。PDF 文件、证据卡和主题集合关联均可用。';
+    }
+    const report = this.healthReport;
+    return `发现 ${report.issueCount} 个问题：${report.missingPdfCount} 份 PDF 缺失，` +
+      `${report.invalidSelectionCount} 张证据卡选区异常，${report.orphanRelationCount} 条关联异常，` +
+      `${report.orphanFileCount} 个孤立文件。`;
+  }
+
+  private async exportDiagnostic(): Promise<void> {
+    const context = this.hostContext();
+    if (context === undefined || !this.isReady || this.isExportingDiagnostic) {
+      return;
+    }
+    if (this.healthReport === undefined) {
+      this.refreshHealthReport();
+    }
+    if (this.healthReport === undefined) {
+      this.statusMessage = '暂时无法生成数据健康报告';
+      return;
+    }
+    this.isExportingDiagnostic = true;
+    this.statusMessage = '正在准备脱敏诊断文件…';
+    try {
+      const snapshot = this.diagnosticService.buildSnapshot(
+        this.database.getSchemaVersion(),
+        this.documents,
+        this.evidenceCards,
+        this.collections,
+        this.collectionItems,
+        this.healthReport
+      );
+      const result = await this.diagnosticService.save(context, snapshot);
+      this.showTransientStatus(result === undefined ?
+        '已取消诊断导出' :
+        `已导出脱敏诊断：${result.fileName}（不包含 PDF、摘录、笔记或网址）`);
+    } catch (error) {
+      this.statusMessage = '诊断导出失败，请检查目标位置是否可写';
+    } finally {
+      this.isExportingDiagnostic = false;
+    }
+  }
+
+  private async restoreData(): Promise<void> {
+    const context = this.hostContext();
+    if (context === undefined || !this.isReady || this.isRestoring) {
+      return;
+    }
+    if (this.showWebEditor) {
+      if (this.requestEditorDraftDiscard('WEB', 'RESTORE_DATA')) {
+        return;
+      }
+      this.closeEditor('WEB');
+    }
+    if (this.showPdfEditor) {
+      if (this.requestEditorDraftDiscard('PDF', 'RESTORE_DATA')) {
+        return;
+      }
+      this.closeEditor('PDF');
+    }
+    if (this.editingEvidenceId.length > 0) {
+      if (this.requestEditorDraftDiscard('EVIDENCE', 'RESTORE_DATA')) {
+        return;
+      }
+      this.closeEditor('EVIDENCE');
+    }
+    if (this.requestEvidenceDraftDiscard('RESTORE_DATA')) {
+      return;
+    }
+    this.statusMessage = '正在读取数据备份…';
+    try {
+      const payload = await this.backupService.chooseAndRead(context);
+      if (payload === undefined) {
+        this.showTransientStatus('已取消数据恢复');
+        return;
+      }
+      this.pendingBackup = payload;
+      this.showRestoreConfirm = true;
+      this.statusMessage = '备份校验通过，请确认是否替换本机数据';
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : '数据恢复失败，备份文件未被导入';
+    }
+  }
+
+  private cancelRestore(): void {
+    if (this.isRestoring) {
+      return;
+    }
+    this.pendingBackup = undefined;
+    this.showRestoreConfirm = false;
+  }
+
+  private async confirmRestore(): Promise<void> {
+    if (this.isRestoring || this.pendingBackup === undefined) {
+      return;
+    }
+    const context = this.hostContext();
+    if (context === undefined) {
+      this.statusMessage = '无法取得应用上下文，数据恢复已取消';
+      return;
+    }
+    const payload = this.pendingBackup;
+    const normalizedPayload = this.backupService.normalizePayload(payload, context.filesDir);
+    this.isRestoring = true;
+    this.showRestoreConfirm = false;
+    this.statusMessage = '正在替换本地资料库…';
+    try {
+      await this.flushReadPositionBeforeDocumentChange();
+      await this.reloadData();
+      const currentSettings = await this.settingsService.load();
+      const currentPayload = this.backupService.buildPayload(
+        this.documents,
+        this.evidenceCards,
+        this.collections,
+        this.collectionItems,
+        currentSettings
+      );
+      const snapshot = await this.backupService.savePreRestoreSnapshot(context, currentPayload);
+      if (this.documentPath.length > 0) {
+        this.pdfController.releaseDocument();
+      }
+      this.documentPath = '';
+      this.activeDocumentId = '';
+      this.pageCount = 0;
+      this.currentPage = 1;
+      this.pageInput = '1';
+      this.resetEvidenceDraft();
+      this.closeEditor('WEB');
+      this.closeEditor('PDF');
+      this.closeEditor('EVIDENCE');
+      await this.releaseThumbnails();
+      await this.backupService.replaceDatabase(this.database, normalizedPayload);
+      let settingsSaved = true;
+      try {
+        await this.settingsService.save(normalizedPayload.settings);
+      } catch (settingsError) {
+        settingsSaved = false;
+      }
+      this.darkMode = normalizedPayload.settings.darkMode;
+      this.focusMode = normalizedPayload.settings.focusMode;
+      this.leftSidebarOpen = normalizedPayload.settings.leftSidebarOpen;
+      this.rightSidebarOpen = normalizedPayload.settings.rightSidebarOpen;
+      this.evidenceColor = normalizedPayload.settings.defaultHighlightColor;
+      this.selectedCollectionId = '';
+      this.clearBatchSelection();
+      this.mainView = 'LIBRARY';
+      await this.reloadData();
+      const missingPdfCount = this.missingPdfCount(this.documents);
+      this.showTransientStatus(
+        `已恢复 ${normalizedPayload.documents.length} 份资料、${normalizedPayload.evidenceCards.length} 张证据卡、` +
+        `${normalizedPayload.collections.length} 个集合` +
+        `${missingPdfCount > 0 ? `；${missingPdfCount} 份 PDF 需要重新导入` : ''}` +
+        `${settingsSaved ? '' : '；界面设置将在下次启动时使用原值'}` +
+        `；恢复前快照已保存为 ${snapshot.fileName}`
+      );
+      this.refreshHealthReport();
+    } catch (error) {
+      try {
+        await this.reloadData();
+      } catch (reloadError) {
+      }
+      this.statusMessage = '数据恢复失败，数据库事务已回滚';
+    } finally {
+      this.pendingBackup = undefined;
+      this.isRestoring = false;
+    }
+  }
+
+  private restoreSummary(): string {
+    if (this.pendingBackup === undefined) {
+      return '';
+    }
+    const missingPdfCount = this.missingPdfCount(this.pendingBackup.documents);
+    return `将替换为 ${this.pendingBackup.documents.length} 份资料、` +
+      `${this.pendingBackup.evidenceCards.length} 张证据卡和 ` +
+      `${this.pendingBackup.collections.length} 个主题集合。JSON 不包含 PDF 二进制文件；` +
+      `${missingPdfCount > 0 ? `当前环境有 ${missingPdfCount} 份 PDF 需要重新导入。` :
+        '如果换了设备，PDF 可能需要重新导入。'}`;
+  }
+
+  private clearBatchSelection(): void {
+    this.selectedEvidenceIds = [];
+    this.batchTags = '';
+    this.batchMode = false;
+    this.showCompareView = false;
+  }
+
+  private toggleBatchMode(): void {
+    if (this.isBatchUpdating) {
+      return;
+    }
+    this.batchMode = !this.batchMode;
+    if (!this.batchMode) {
+      this.selectedEvidenceIds = [];
+      this.batchTags = '';
+    }
+  }
+
+  private isEvidenceSelected(id: string): boolean {
+    return this.selectedEvidenceIds.includes(id);
+  }
+
+  private toggleEvidenceSelection(id: string, selected: boolean): void {
+    const ids = this.selectedEvidenceIds.slice();
+    if (selected && !ids.includes(id)) {
+      ids.push(id);
+    }
+    if (!selected) {
+      const index = ids.indexOf(id);
+      if (index >= 0) {
+        ids.splice(index, 1);
+      }
+    }
+    this.selectedEvidenceIds = ids;
+  }
+
+  private selectAllFilteredEvidence(): void {
+    this.selectedEvidenceIds = this.filteredReviewCards().map((card: EvidenceCard): string => card.id);
+  }
+
+  private selectedBatchCards(): EvidenceCard[] {
+    return this.filteredReviewCards().filter((card: EvidenceCard): boolean =>
+      this.selectedEvidenceIds.includes(card.id));
+  }
+
+  private async batchSetReviewStatus(status: ReviewStatus): Promise<void> {
+    const cards = this.selectedBatchCards();
+    if (cards.length === 0 || this.isBatchUpdating) {
+      return;
+    }
+    this.isBatchUpdating = true;
+    try {
+      const count = await this.evidenceRepository.batchSetReviewStatus(
+        cards.map((card: EvidenceCard): string => card.id),
+        status
+      );
+      await this.reloadData();
+      this.selectedEvidenceIds = [];
+      this.showTransientStatus(`已批量${status === 'MASTERED' ? '标记为掌握' : '加入待复习'} ${count} 张`);
+    } catch (error) {
+      this.statusMessage = '批量更新复习状态失败，未完成的操作已回滚';
+    } finally {
+      this.isBatchUpdating = false;
+    }
+  }
+
+  private async batchAppendTags(): Promise<void> {
+    const cards = this.selectedBatchCards();
+    const tags = this.batchTags.trim();
+    if (cards.length === 0 || this.isBatchUpdating) {
+      return;
+    }
+    if (!this.validateLength(tags, '批量标签', MAX_TAGS_LENGTH)) {
+      return;
+    }
+    if (normalizeTags(tags).length === 0) {
+      this.statusMessage = '请输入至少一个标签';
+      return;
+    }
+    this.isBatchUpdating = true;
+    try {
+      const count = await this.evidenceRepository.batchAppendTags(
+        cards.map((card: EvidenceCard): string => card.id),
+        tags
+      );
+      await this.reloadData();
+      this.batchTags = '';
+      this.showTransientStatus(`已为 ${count} 张证据卡追加标签`);
+    } catch (error) {
+      this.statusMessage = '批量追加标签失败，未完成的操作已回滚';
+    } finally {
+      this.isBatchUpdating = false;
+    }
+  }
+
+  private openCompareView(): void {
+    const count = this.selectedBatchCards().length;
+    if (count < 2 || count > 4) {
+      this.statusMessage = '请选择 2–4 张证据卡进行对比';
+      return;
+    }
+    this.showCompareView = true;
+  }
+
+  private compareCards(): EvidenceCard[] {
+    return this.selectedBatchCards().slice(0, 4);
   }
 
   private allTags(): string[] {
@@ -1929,17 +2767,37 @@ struct Index {
 
   private async deleteDocument(document: DocumentRecord): Promise<void> {
     let recordDeleted = false;
+    let archivedPdf: DeletedPdfArchive | undefined = undefined;
+    let snapshotFileName: string = '';
     try {
-      if (document.id === this.activeDocumentId && this.documentPath.length > 0) {
+      const context = this.hostContext();
+      if (context !== undefined) {
         await this.flushReadPositionBeforeDocumentChange();
+        await this.reloadData();
+        const settings = await this.settingsService.load();
+        const payload = this.backupService.buildPayload(
+          this.documents,
+          this.evidenceCards,
+          this.collections,
+          this.collectionItems,
+          settings
+        );
+        const snapshot = await this.backupService.savePreDeleteSnapshot(context, payload);
+        snapshotFileName = snapshot.fileName;
+      }
+      if (document.id === this.activeDocumentId && this.documentPath.length > 0) {
         this.pdfController.releaseDocument();
         this.documentPath = '';
         this.activeDocumentId = '';
         this.mainView = 'LIBRARY';
       }
+      if (context !== undefined) {
+        archivedPdf = await this.backupService.archivePdfForDelete(context, document);
+      }
       await this.libraryRepository.delete(document.id);
       recordDeleted = true;
-      if (document.kind === 'PDF' && this.importService.fileExists(document.source)) {
+      if (document.kind === 'PDF' && archivedPdf === undefined &&
+        this.importService.fileExists(document.source)) {
         await fs.unlink(document.source);
         const lastSlash = document.source.lastIndexOf('/');
         if (lastSlash > 0) {
@@ -1947,8 +2805,18 @@ struct Index {
         }
       }
       await this.reloadData();
-      this.showTransientStatus(`已从本地资料库删除 ${document.title}`);
+      this.refreshHealthReport();
+      this.showTransientStatus(
+        `已从本地资料库删除 ${document.title}` +
+        (snapshotFileName.length > 0 ? `；删除前快照已保存为 ${snapshotFileName}` : '')
+      );
     } catch (error) {
+      if (archivedPdf !== undefined && !recordDeleted) {
+        try {
+          await this.backupService.restoreArchivedPdf(archivedPdf);
+        } catch (restoreError) {
+        }
+      }
       await this.reloadData();
       this.statusMessage = recordDeleted ?
         '资料和关联证据已删除，但部分本地文件可能需要稍后清理' :
@@ -1984,6 +2852,11 @@ struct Index {
     this.deleteTargetId = card.id;
   }
 
+  private requestDeleteCollection(collection: CollectionRecord): void {
+    this.deleteTargetKind = 'COLLECTION';
+    this.deleteTargetId = collection.id;
+  }
+
   private cancelDelete(): void {
     if (this.isDeleting) {
       return;
@@ -2006,8 +2879,21 @@ struct Index {
     return this.evidenceCards.find((card: EvidenceCard): boolean => card.id === this.deleteTargetId);
   }
 
+  private pendingDeleteCollection(): CollectionRecord | undefined {
+    if (this.deleteTargetKind !== 'COLLECTION') {
+      return undefined;
+    }
+    return this.collectionById(this.deleteTargetId);
+  }
+
   private deleteDialogTitle(): string {
-    return this.deleteTargetKind === 'DOCUMENT' ? '删除这份资料？' : '删除这张证据卡？';
+    if (this.deleteTargetKind === 'DOCUMENT') {
+      return '删除这份资料？';
+    }
+    if (this.deleteTargetKind === 'COLLECTION') {
+      return '删除这个主题集合？';
+    }
+    return '删除这张证据卡？';
   }
 
   private deleteDialogTarget(): string {
@@ -2016,7 +2902,11 @@ struct Index {
       return document.title;
     }
     const card = this.pendingDeleteEvidence();
-    return card === undefined ? '目标内容已不存在' : card.quote;
+    if (card !== undefined) {
+      return card.quote;
+    }
+    const collection = this.pendingDeleteCollection();
+    return collection === undefined ? '目标内容已不存在' : collection.name;
   }
 
   private deleteDialogMessage(): string {
@@ -2028,6 +2918,10 @@ struct Index {
         '保存的网址、摘录和笔记也会被移除。';
       return `将同时删除 ${evidenceCount} 张关联证据卡。${sourceMessage}此操作无法撤销。`;
     }
+    const collection = this.pendingDeleteCollection();
+    if (collection !== undefined) {
+      return `将移除集合中的 ${this.collectionItemCount(collection.id)} 条关联，不会删除资料或证据卡。此操作无法撤销。`;
+    }
     return 'PDF 上对应的阅迹标注也会被移除，原始 PDF 文件不受影响。此操作无法撤销。';
   }
 
@@ -2037,7 +2931,8 @@ struct Index {
     }
     const document = this.pendingDeleteDocument();
     const card = this.pendingDeleteEvidence();
-    if (document === undefined && card === undefined) {
+    const collection = this.pendingDeleteCollection();
+    if (document === undefined && card === undefined && collection === undefined) {
       this.cancelDelete();
       this.statusMessage = '删除目标已不存在';
       return;
@@ -2048,6 +2943,8 @@ struct Index {
         await this.deleteDocument(document);
       } else if (card !== undefined) {
         await this.deleteEvidence(card);
+      } else if (collection !== undefined) {
+        await this.deleteCollection(collection);
       }
     } finally {
       this.isDeleting = false;
@@ -2123,7 +3020,7 @@ struct Index {
     }
   }
 
-  private async saveWebDocument(): Promise<void> {
+  private async saveWebDocument(forceDuplicate: boolean = false): Promise<void> {
     if (this.isSavingEditor) {
       return;
     }
@@ -2147,20 +3044,77 @@ struct Index {
     };
     const isNewDocument = this.editingWebId.length === 0;
     const editingWebId = this.editingWebId;
+    const normalizedUrl = this.linkService.normalizeUrl(draft.url);
+    if (!forceDuplicate) {
+      const duplicate = this.documents.find((document: DocumentRecord): boolean =>
+        document.id !== editingWebId &&
+        document.kind === 'WEB' &&
+        this.linkService.normalizeUrl(document.source).toLowerCase() === normalizedUrl.toLowerCase());
+      if (duplicate !== undefined) {
+        this.duplicateWebDocumentId = duplicate.id;
+        this.showDuplicateWebConfirm = true;
+        this.statusMessage = `已发现相同网址：${duplicate.title}`;
+        return;
+      }
+    }
     this.isSavingEditor = true;
     this.statusMessage = '正在保存网页资料卡…';
     try {
       if (isNewDocument) {
-        await this.libraryRepository.insert(this.linkService.createDocument(draft));
+        const created = this.linkService.createDocument(draft);
+        const card = created.excerpt.length > 0 ?
+          this.createWebEvidenceCard(created, created.excerpt, created.note, created.tags) :
+          undefined;
+        await this.libraryRepository.insertWebWithEvidence(created, card);
       } else {
-        await this.libraryRepository.updateWebDetails(
-          editingWebId,
-          draft.title.trim().length > 0 ? draft.title.trim() : this.linkService.normalizeUrl(draft.url),
-          this.linkService.normalizeUrl(draft.url),
-          draft.excerpt.trim(),
-          draft.note.trim(),
-          normalizeTags(draft.tags)
-        );
+        const existingDocument = this.documentById(editingWebId);
+        if (existingDocument === undefined) {
+          throw new Error('Web document no longer exists');
+        }
+        const existingCards = (await this.evidenceRepository.listByDocument(editingWebId))
+          .filter((card: EvidenceCard): boolean => card.kind === 'QUOTE');
+        const updated: DocumentRecord = {
+          id: existingDocument.id,
+          kind: existingDocument.kind,
+          title: draft.title.trim().length > 0 ?
+            draft.title.trim() : this.linkService.normalizeUrl(draft.url),
+          source: this.linkService.normalizeUrl(draft.url),
+          pageCount: existingDocument.pageCount,
+          currentPage: existingDocument.currentPage,
+          favorite: existingDocument.favorite,
+          excerpt: draft.excerpt.trim(),
+          note: draft.note.trim(),
+          tags: normalizeTags(draft.tags),
+          contentHash: existingDocument.contentHash,
+          createdAt: existingDocument.createdAt,
+          lastReadAt: Date.now()
+        };
+        const primary = existingCards[0];
+        const card: EvidenceCard | undefined = updated.excerpt.length > 0 ?
+          (primary === undefined ?
+            this.createWebEvidenceCard(updated, updated.excerpt, updated.note, updated.tags) :
+            {
+              id: primary.id,
+              documentId: primary.documentId,
+              quote: updated.excerpt,
+              pageIndex: 0,
+              rectsJson: '[]',
+              note: updated.note,
+              kind: 'QUOTE',
+              color: primary.color,
+              tags: updated.tags,
+              reviewStatus: primary.reviewStatus,
+              lastReviewedAt: primary.lastReviewedAt,
+              nextReviewAt: primary.nextReviewAt,
+              reviewCount: primary.reviewCount,
+              createdAt: primary.createdAt,
+              updatedAt: Date.now()
+            }) :
+          undefined;
+        const removeCardIds = updated.excerpt.length > 0 ?
+          existingCards.slice(1).map((item: EvidenceCard): string => item.id) :
+          existingCards.map((item: EvidenceCard): string => item.id);
+        await this.libraryRepository.updateWebWithEvidence(updated, card, removeCardIds);
       }
       await this.reloadData();
       this.closeEditor('WEB');
@@ -2170,6 +3124,45 @@ struct Index {
     } finally {
       this.isSavingEditor = false;
     }
+  }
+
+  private duplicateWebDocument(): DocumentRecord | undefined {
+    return this.documentById(this.duplicateWebDocumentId);
+  }
+
+  private duplicateWebDocumentTitle(): string {
+    const document = this.duplicateWebDocument();
+    return document === undefined ? '原网页资料已不存在' : document.title;
+  }
+
+  private duplicateWebDocumentMessage(): string {
+    return this.duplicateWebDocument() === undefined ?
+      '这条重复记录可能刚刚被删除，请重新保存当前网页资料。' :
+      '当前网址已经在资料库中。你可以直接打开已有资料，也可以保留两条记录。';
+  }
+
+  private cancelDuplicateWebConfirm(): void {
+    this.showDuplicateWebConfirm = false;
+    this.duplicateWebDocumentId = '';
+    this.showTransientStatus('已保留当前网页资料草稿');
+  }
+
+  private async openDuplicateWebDocument(): Promise<void> {
+    const document = this.duplicateWebDocument();
+    this.showDuplicateWebConfirm = false;
+    this.duplicateWebDocumentId = '';
+    if (document === undefined) {
+      this.statusMessage = '原重复网页资料已不存在，请重新保存';
+      return;
+    }
+    this.closeEditor('WEB');
+    await this.openWebSource(document);
+  }
+
+  private saveDuplicateWebAnyway(): void {
+    this.showDuplicateWebConfirm = false;
+    this.duplicateWebDocumentId = '';
+    this.saveWebDocument(true);
   }
 
   private async openWebSource(document: DocumentRecord): Promise<void> {
@@ -2561,6 +3554,31 @@ struct Index {
           this.cancelDelete();
           return true;
         }
+        if (this.showCompareView) {
+          this.showCompareView = false;
+          return true;
+        }
+        if (this.showRestoreConfirm) {
+          this.cancelRestore();
+          return true;
+        }
+        if (this.showHealthPanel) {
+          this.showHealthPanel = false;
+          return true;
+        }
+        if (this.showDuplicateWebConfirm) {
+          this.cancelDuplicateWebConfirm();
+          return true;
+        }
+        if (this.collectionTargetKind !== 'NONE') {
+          this.closeCollectionPicker();
+          return true;
+        }
+        if (this.showCollectionManager) {
+          this.showCollectionManager = false;
+          this.cancelCollectionForm();
+          return true;
+        }
         if (this.showWebEditor) {
           this.requestCloseEditor('WEB');
           return true;
@@ -2590,7 +3608,13 @@ struct Index {
     }
     if (this.editorDraftAction !== 'NONE' ||
       this.evidenceDraftAction !== 'NONE' ||
-      this.deleteTargetKind !== 'NONE') {
+      this.deleteTargetKind !== 'NONE' ||
+      this.showDuplicateWebConfirm ||
+      this.showCompareView ||
+      this.showRestoreConfirm ||
+      this.showHealthPanel ||
+      this.collectionTargetKind !== 'NONE' ||
+      this.showCollectionManager) {
       return true;
     }
     if (this.handleEditingShortcut(event)) {
@@ -2603,6 +3627,14 @@ struct Index {
     }
     if (event.keyCode === KeyCode.KEYCODE_O) {
       this.importPdf();
+      return true;
+    }
+    if (event.keyCode === KeyCode.KEYCODE_B) {
+      this.backupData();
+      return true;
+    }
+    if (event.keyCode === KeyCode.KEYCODE_R) {
+      this.restoreData();
       return true;
     }
     if (event.keyCode === KeyCode.KEYCODE_S) {
@@ -2759,6 +3791,7 @@ struct Index {
       .padding({ left: 10, right: 10 })
       .onClick((): void => {
         this.selectedTag = tag;
+        this.saveWorkspace();
       });
   }
 
@@ -2777,6 +3810,9 @@ struct Index {
       .padding({ left: 10, right: 10 })
       .onClick((): void => {
         this.reviewSelectedTag = tag;
+        this.selectedEvidenceIds = [];
+        this.showCompareView = false;
+        this.saveWorkspace();
       });
   }
 
@@ -2796,7 +3832,587 @@ struct Index {
       .padding({ left: 11, right: 11 })
       .onClick((): void => {
         this.reviewFilter = filter;
+        this.selectedEvidenceIds = [];
+        this.showCompareView = false;
+        this.saveWorkspace();
       });
+  }
+
+  @Builder
+  private CollectionButton(collectionId: string): void {
+    Button(collectionId.length === 0 ?
+      (this.mainView === 'REVIEW' ? '全部主题' : '全部资料') :
+      this.collectionNameFor(collectionId))
+      .height(30)
+      .fontSize(12)
+      .fontColor(this.selectedCollectionId === collectionId ? '#FFFFFF' : this.secondaryText())
+      .backgroundColor(this.selectedCollectionId === collectionId ? this.accentColor() : this.raisedBackground())
+      .border({
+        width: 1,
+        color: this.selectedCollectionId === collectionId ? this.accentColor() : this.dividerColor()
+      })
+      .borderRadius(6)
+      .padding({ left: 10, right: 10 })
+      .onClick((): void => {
+        this.selectCollection(collectionId);
+      });
+  }
+
+  @Builder
+  private BatchReviewToolbar(): void {
+    if (this.batchMode) {
+      Column({ space: 8 }) {
+        Row({ space: 7 }) {
+          Text(`已选 ${this.selectedBatchCards().length} 张`)
+            .fontSize(12)
+            .fontColor(this.primaryText())
+            .fontWeight(FontWeight.Medium);
+          this.ToolButton((): string => '全选当前结果', (): void => {
+            this.selectAllFilteredEvidence();
+          }, (): boolean => !this.isBatchUpdating && this.filteredReviewCards().length > 0);
+          this.ToolButton((): string => '清空选择', (): void => {
+            this.selectedEvidenceIds = [];
+          }, (): boolean => !this.isBatchUpdating && this.selectedEvidenceIds.length > 0);
+          Blank();
+          this.ToolButton((): string => '退出批量', (): void => {
+            this.toggleBatchMode();
+          }, (): boolean => !this.isBatchUpdating);
+        }
+        .width('100%');
+        Row({ space: 7 }) {
+          this.ToolButton(
+            (): string => '设为待复习',
+            (): void => {
+              this.batchSetReviewStatus('TO_REVIEW');
+            },
+            (): boolean => !this.isBatchUpdating && this.selectedBatchCards().length > 0
+          );
+          this.ToolButton(
+            (): string => '标记掌握',
+            (): void => {
+              this.batchSetReviewStatus('MASTERED');
+            },
+            (): boolean => !this.isBatchUpdating && this.selectedBatchCards().length > 0
+          );
+          TextInput({ placeholder: '追加标签', text: this.batchTags })
+            .width(this.windowWidth < 900 ? 130 : 190)
+            .height(34)
+            .maxLength(MAX_TAGS_LENGTH)
+            .fontSize(12)
+            .fontColor(this.primaryText())
+            .placeholderColor(this.mutedText())
+            .backgroundColor(this.raisedBackground())
+            .border({ width: 1, color: this.dividerColor() })
+            .borderRadius(6)
+            .enabled(!this.isBatchUpdating)
+            .onChange((value: string): void => {
+              this.batchTags = value;
+            });
+          this.ToolButton(
+            (): string => this.isBatchUpdating ? '处理中…' : '追加标签',
+            (): void => {
+              this.batchAppendTags();
+            },
+            (): boolean => !this.isBatchUpdating && this.selectedBatchCards().length > 0
+          );
+          this.AccentButton(
+            (): string => '对比',
+            (): void => {
+              this.openCompareView();
+            },
+            (): boolean => !this.isBatchUpdating &&
+              this.selectedBatchCards().length >= 2 &&
+              this.selectedBatchCards().length <= 4
+          );
+        }
+        .width('100%');
+      }
+      .width('100%')
+      .padding(10)
+      .borderRadius(6)
+      .backgroundColor(this.accentSoft())
+      .border({ width: 1, color: this.accentColor() });
+    }
+  }
+
+  @Builder
+  private CollectionManagerOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          if (!this.isSavingCollection) {
+            this.showCollectionManager = false;
+            this.cancelCollectionForm();
+          }
+        });
+      Column({ space: 12 }) {
+        Row() {
+          Text('主题集合')
+            .fontSize(19)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryText());
+          Blank();
+          this.ToolButton((): string => '关闭', (): void => {
+            this.showCollectionManager = false;
+            this.cancelCollectionForm();
+          }, (): boolean => !this.isSavingCollection);
+        }
+        .width('100%');
+        Text('把课程、论文和证据卡放进同一组，复习时可以按主题集中查看。')
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .lineHeight(18)
+          .width('100%');
+        Scroll() {
+          Column({ space: 8 }) {
+            if (this.collections.length === 0) {
+              Text('还没有主题集合')
+                .fontSize(13)
+                .fontColor(this.mutedText())
+                .width('100%')
+                .padding({ top: 10, bottom: 10 });
+            }
+            ForEach(this.collections, (collection: CollectionRecord): void => {
+              Row({ space: 8 }) {
+                Column({ space: 3 }) {
+                  Text(collection.name)
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(this.primaryText())
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%');
+                  Text(collection.description.length > 0 ? collection.description :
+                    `${this.collectionItemCount(collection.id)} 条关联`)
+                    .fontSize(11)
+                    .fontColor(this.secondaryText())
+                    .maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%');
+                }
+                .layoutWeight(1);
+                Text(`${this.collectionItemCount(collection.id)}`)
+                  .fontSize(11)
+                  .fontColor(this.accentColor());
+                this.ToolButton((): string => '编辑', (): void => {
+                  this.startEditCollection(collection);
+                }, (): boolean => !this.isSavingCollection);
+                this.DangerButton((): string => '删除', (): void => {
+                  this.requestDeleteCollection(collection);
+                }, (): boolean => !this.isSavingCollection);
+              }
+              .width('100%')
+              .padding(10)
+              .borderRadius(6)
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() });
+            }, (collection: CollectionRecord): string => collection.id);
+          }
+          .width('100%');
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Auto);
+        Divider().color(this.dividerColor());
+        Text(this.editingCollectionId.length === 0 ? '新建集合' : '编辑集合')
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryText())
+          .width('100%');
+        TextInput({ placeholder: '集合名称', text: this.collectionName })
+          .width('100%')
+          .height(36)
+          .maxLength(MAX_COLLECTION_NAME_LENGTH)
+          .fontSize(12)
+          .fontColor(this.primaryText())
+          .placeholderColor(this.mutedText())
+          .backgroundColor(this.raisedBackground())
+          .border({ width: 1, color: this.dividerColor() })
+          .borderRadius(6)
+          .enabled(!this.isSavingCollection)
+          .onChange((value: string): void => {
+            this.collectionName = value;
+          });
+        TextArea({ placeholder: '集合说明（可选）', text: this.collectionDescription })
+          .width('100%')
+          .height(64)
+          .maxLength(MAX_COLLECTION_DESCRIPTION_LENGTH)
+          .fontSize(12)
+          .fontColor(this.primaryText())
+          .placeholderColor(this.mutedText())
+          .backgroundColor(this.raisedBackground())
+          .border({ width: 1, color: this.dividerColor() })
+          .borderRadius(6)
+          .enabled(!this.isSavingCollection)
+          .onChange((value: string): void => {
+            this.collectionDescription = value;
+          });
+        Row({ space: 8 }) {
+          if (this.editingCollectionId.length > 0) {
+            this.ToolButton((): string => '取消编辑', (): void => {
+              this.cancelCollectionForm();
+            }, (): boolean => !this.isSavingCollection);
+          }
+          Blank();
+          this.AccentButton(
+            (): string => this.isSavingCollection ? '正在保存…' :
+              (this.editingCollectionId.length === 0 ? '创建集合' : '保存修改'),
+            (): void => {
+              this.saveCollection();
+            },
+            (): boolean => !this.isSavingCollection
+          );
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(560))
+      .height(this.compactEditorHeight(640))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private CollectionPickerOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.closeCollectionPicker();
+        });
+      Column({ space: 12 }) {
+        Row() {
+          Text('加入主题集合')
+            .fontSize(19)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryText());
+          Blank();
+          this.ToolButton((): string => '关闭', (): void => {
+            this.closeCollectionPicker();
+          }, (): boolean => !this.isUpdatingCollectionItem);
+        }
+        .width('100%');
+        Text(this.collectionTargetKind === 'DOCUMENT' ? '选择资料要归入的主题。' : '选择证据卡要归入的主题。')
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .width('100%');
+        Scroll() {
+          Column({ space: 8 }) {
+            ForEach(this.collections, (collection: CollectionRecord): void => {
+              Button() {
+                Row({ space: 8 }) {
+                  Column({ space: 2 }) {
+                    Text(collection.name)
+                      .fontSize(13)
+                      .fontColor(this.primaryText())
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      .width('100%');
+                    Text(`${this.collectionItemCount(collection.id)} 条关联`)
+                      .fontSize(10)
+                      .fontColor(this.mutedText());
+                  }
+                  .layoutWeight(1);
+                  Text(this.collectionTargetSelected(collection.id) ? '已加入' : '加入')
+                    .fontSize(12)
+                    .fontColor(this.collectionTargetSelected(collection.id) ?
+                      this.accentColor() : this.secondaryText());
+                }
+                .width('100%');
+              }
+                .width('100%')
+                .height(48)
+                .padding({ left: 12, right: 12 })
+                .borderRadius(6)
+                .backgroundColor(this.collectionTargetSelected(collection.id) ?
+                  this.accentSoft() : this.raisedBackground())
+                .border({
+                  width: 1,
+                  color: this.collectionTargetSelected(collection.id) ?
+                    this.accentColor() : this.dividerColor()
+                })
+                .enabled(!this.isUpdatingCollectionItem)
+                .onClick((): void => {
+                  this.toggleCollectionItem(collection);
+                });
+            }, (collection: CollectionRecord): string => collection.id);
+          }
+          .width('100%');
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Auto);
+        Row({ space: 8 }) {
+          this.ToolButton((): string => '管理集合', (): void => {
+            this.closeCollectionPicker();
+            this.startCollectionManager();
+          }, (): boolean => !this.isUpdatingCollectionItem);
+          Blank();
+          this.AccentButton((): string => '完成', (): void => {
+            this.closeCollectionPicker();
+          }, (): boolean => !this.isUpdatingCollectionItem);
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(480))
+      .height(this.compactEditorHeight(520))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private RestoreConfirmOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.cancelRestore();
+        });
+      Column({ space: 14 }) {
+        Text('恢复本地数据？')
+          .fontSize(19)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.primaryText())
+          .width('100%');
+        Text(this.restoreSummary())
+          .fontSize(13)
+          .fontColor(this.secondaryText())
+          .lineHeight(21)
+          .width('100%');
+        Text('恢复会替换当前资料库和界面设置。建议先备份当前数据。')
+          .fontSize(12)
+          .fontColor(this.coralColor())
+          .lineHeight(18)
+          .width('100%');
+        Row({ space: 9 }) {
+          Blank();
+          this.ToolButton((): string => '取消', (): void => {
+            this.cancelRestore();
+          }, (): boolean => !this.isRestoring);
+          this.DangerFilledButton(
+            (): string => this.isRestoring ? '正在恢复…' : '确认恢复',
+            (): void => {
+              this.confirmRestore();
+            },
+            (): boolean => !this.isRestoring
+          );
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(500))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private DataHealthOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.showHealthPanel = false;
+        });
+      Column({ space: 12 }) {
+        Row() {
+          Text('数据健康')
+            .fontSize(19)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryText());
+          Blank();
+          this.ToolButton((): string => '关闭', (): void => {
+            this.showHealthPanel = false;
+          });
+        }
+        .width('100%');
+        Text(this.healthSummary())
+          .fontSize(13)
+          .fontColor(this.healthReport !== undefined && this.healthReport.issueCount > 0 ?
+            this.coralColor() : this.accentColor())
+          .lineHeight(21)
+          .width('100%');
+        if (this.healthReport !== undefined && this.healthReport.issueCount > 0) {
+          Scroll() {
+            Column({ space: 7 }) {
+              ForEach(this.healthReport.issues.slice(0, 12), (issue: DataHealthIssue): void => {
+                Row({ space: 8 }) {
+                  Text(issue.code)
+                    .fontSize(10)
+                    .fontColor(this.coralColor())
+                    .width(128);
+                  Text(issue.detail)
+                    .fontSize(12)
+                    .fontColor(this.secondaryText())
+                    .lineHeight(18)
+                    .maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .layoutWeight(1);
+                }
+                .width('100%')
+                .padding(8)
+                .borderRadius(6)
+                .backgroundColor(this.raisedBackground())
+                .border({ width: 1, color: this.dividerColor() });
+              }, (issue: DataHealthIssue): string =>
+                `${issue.code}-${issue.documentId}-${issue.detail}`);
+            }
+            .width('100%');
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .scrollBar(BarState.Auto);
+        } else {
+          Blank()
+            .layoutWeight(1);
+        }
+        Text('诊断文件只包含版本、数量和问题类型，不包含 PDF、摘录、笔记、网址或个人身份信息。')
+          .fontSize(11)
+          .fontColor(this.mutedText())
+          .lineHeight(17)
+          .width('100%');
+        Row({ space: 8 }) {
+          this.ToolButton(
+            (): string => this.isCheckingHealth ? '检查中…' : '重新检查',
+            (): void => {
+              this.refreshHealthReport(true);
+            },
+            (): boolean => !this.isCheckingHealth
+          );
+          this.AccentButton(
+            (): string => this.isExportingDiagnostic ? '导出中…' : '导出诊断',
+            (): void => {
+              this.exportDiagnostic();
+            },
+            (): boolean => !this.isExportingDiagnostic && !this.isCheckingHealth
+          );
+          Blank();
+          this.ToolButton((): string => '完成', (): void => {
+            this.showHealthPanel = false;
+          });
+        }
+        .width('100%');
+      }
+      .width(this.compactEditorWidth(620))
+      .height(this.compactEditorHeight(560))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private CompareOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.showCompareView = false;
+        });
+      Column({ space: 12 }) {
+        Row() {
+          Text(`证据对比 · ${this.compareCards().length} 张`)
+            .fontSize(19)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.primaryText());
+          Blank();
+          this.ToolButton((): string => '关闭', (): void => {
+            this.showCompareView = false;
+          });
+        }
+        .width('100%');
+        Scroll() {
+          Row({ space: 10 }) {
+            ForEach(this.compareCards(), (card: EvidenceCard): void => {
+              Column({ space: 8 }) {
+                Text(this.evidenceSourceLabel(card))
+                  .fontSize(11)
+                  .fontColor(this.accentColor())
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%');
+                Text(card.quote)
+                  .fontSize(14)
+                  .fontColor(this.primaryText())
+                  .lineHeight(21)
+                  .maxLines(10)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%')
+                  .padding({ left: 10 })
+                  .border({ width: { left: 3 }, color: card.color });
+                Text(card.note.length > 0 ? card.note : '暂无个人笔记')
+                  .fontSize(11)
+                  .fontColor(card.note.length > 0 ? this.secondaryText() : this.mutedText())
+                  .lineHeight(18)
+                  .maxLines(5)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .width('100%');
+                if (card.tags.length > 0) {
+                  Text(tagList(card.tags).map((tag: string): string => `#${tag}`).join('  '))
+                    .fontSize(10)
+                    .fontColor(this.accentColor())
+                    .maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%');
+                }
+                this.ToolButton((): string => '回到原文', (): void => {
+                  this.showCompareView = false;
+                  this.returnToEvidence(card);
+                });
+              }
+              .width(230)
+              .padding(12)
+              .borderRadius(8)
+              .backgroundColor(this.raisedBackground())
+              .border({ width: 1, color: this.dividerColor() });
+            }, (card: EvidenceCard): string => card.id);
+          }
+          .width('100%');
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Auto);
+        Text('对比视图只读，不会修改证据卡。')
+          .fontSize(11)
+          .fontColor(this.mutedText())
+          .width('100%');
+      }
+      .width(this.compactEditorWidth(1000))
+      .height(this.compactEditorHeight(680))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
   }
 
   @Builder
@@ -2860,6 +4476,23 @@ struct Index {
         this.ToolButton((): string => '导出', (): void => {
           this.exportCurrentView();
         }, (): boolean => this.documents.length > 0 && !this.reviewSessionSourceOpen);
+        this.ToolButton((): string => '集合', (): void => {
+          this.startCollectionManager();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen);
+        this.ToolButton((): string => '备份', (): void => {
+          this.backupData();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen && !this.isRestoring);
+        this.ToolButton((): string => '恢复', (): void => {
+          this.restoreData();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen && !this.isRestoring);
+        if (this.windowWidth >= 1100) {
+          this.ToolButton((): string => '健康', (): void => {
+            this.openHealthPanel();
+          }, (): boolean => this.isReady && !this.reviewSessionSourceOpen);
+          this.ToolButton((): string => '诊断', (): void => {
+            this.exportDiagnostic();
+          }, (): boolean => this.isReady && !this.reviewSessionSourceOpen && !this.isExportingDiagnostic);
+        }
       }
       if (this.windowWidth >= 760) {
         this.ToolButton((): string => this.windowWidth < 1100 ? '网页' : '网页资料', (): void => {
@@ -3047,6 +4680,26 @@ struct Index {
           this.closeCompactNavigation();
           this.exportCurrentView();
         }, (): boolean => this.documents.length > 0 && !this.reviewSessionSourceOpen);
+        this.NavButton('管理主题集合', (): boolean => false, (): void => {
+          this.closeCompactNavigation();
+          this.startCollectionManager();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen);
+        this.NavButton('备份数据', (): boolean => false, (): void => {
+          this.closeCompactNavigation();
+          this.backupData();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen && !this.isRestoring);
+        this.NavButton('恢复数据', (): boolean => false, (): void => {
+          this.closeCompactNavigation();
+          this.restoreData();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen && !this.isRestoring);
+        this.NavButton('检查数据健康', (): boolean => false, (): void => {
+          this.closeCompactNavigation();
+          this.openHealthPanel();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen);
+        this.NavButton('导出脱敏诊断', (): boolean => false, (): void => {
+          this.closeCompactNavigation();
+          this.exportDiagnostic();
+        }, (): boolean => this.isReady && !this.reviewSessionSourceOpen && !this.isExportingDiagnostic);
       }
       Divider().color(this.dividerColor()).margin({ top: 5, bottom: 5 });
       if (this.mainView === 'READER' && this.documentPath.length > 0) {
@@ -3244,6 +4897,9 @@ struct Index {
             this.startEditPdf(document);
           }
         });
+        this.ToolButton((): string => '加入集合', (): void => {
+          this.startAddToCollection(document.id, 'DOCUMENT');
+        });
         this.DangerButton((): string => '删除', (): void => {
           this.requestDeleteDocument(document);
         });
@@ -3304,7 +4960,8 @@ struct Index {
         Row({ space: 10 }) {
           Column({ space: 3 }) {
             Text(this.libraryScope === 'FAVORITE' ? '收藏资料' :
-              this.libraryScope === 'RECENT' ? '最近阅读' : '资料库')
+              this.libraryScope === 'RECENT' ? '最近阅读' :
+                this.selectedCollectionId.length > 0 ? this.collectionNameFor(this.selectedCollectionId) : '资料库')
               .fontSize(22)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.primaryText())
@@ -3315,7 +4972,7 @@ struct Index {
               .width('100%');
           }
           .layoutWeight(1);
-          TextInput({ placeholder: '搜索标题、网址或标签', text: this.librarySearch })
+          TextInput({ placeholder: '搜索标题、摘录、笔记或标签', text: this.librarySearch })
             .id('librarySearch')
             .width(this.windowWidth < 900 ? 210 : 280)
             .height(36)
@@ -3328,6 +4985,7 @@ struct Index {
             .borderRadius(6)
             .onChange((value: string): void => {
               this.librarySearch = value;
+              this.saveWorkspace();
             });
         }
         .width('100%');
@@ -3342,6 +5000,19 @@ struct Index {
         .width('100%')
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off);
+        if (this.collections.length > 0) {
+          Scroll() {
+            Row({ space: 8 }) {
+              this.CollectionButton('');
+              ForEach(this.collections, (collection: CollectionRecord): void => {
+                this.CollectionButton(collection.id);
+              }, (collection: CollectionRecord): string => collection.id);
+            }
+          }
+          .width('100%')
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off);
+        }
       }
       .width('100%')
       .padding({ left: 22, right: 22, top: 18, bottom: 14 })
@@ -3351,6 +5022,7 @@ struct Index {
       if (this.libraryScope === 'ALL' &&
         this.librarySearch.trim().length === 0 &&
         this.selectedTag.length === 0 &&
+        this.selectedCollectionId.length === 0 &&
         this.recentPdfDocument() !== undefined) {
         this.ContinueReadingBar(this.recentPdfDocument()!);
       }
@@ -3432,9 +5104,10 @@ struct Index {
           .backgroundColor(this.raisedBackground())
           .border({ width: 1, color: this.dividerColor() })
           .borderRadius(6)
-          .onChange((value: string): void => {
-            this.searchText = value;
-            if (this.searchedText.length > 0 && value.trim() !== this.searchedText) {
+            .onChange((value: string): void => {
+              this.searchText = value;
+              this.saveWorkspace();
+              if (this.searchedText.length > 0 && value.trim() !== this.searchedText) {
               this.clearPdfSearch('全文搜索已清除');
             }
           })
@@ -3444,6 +5117,12 @@ struct Index {
         this.IconToolButton($r('sys.symbol.search_things'), (): string => '查找', (): void => {
           this.runSearch();
         }, (): boolean => this.documentPath.length > 0);
+        if (this.searchText.length > 0) {
+          this.ToolButton((): string => '清除', (): void => {
+            this.searchText = '';
+            this.clearPdfSearch('全文搜索已清除');
+          }, (): boolean => this.documentPath.length > 0);
+        }
         if (this.searchCount > 0) {
           Text(`${this.searchIndex}/${this.searchCount}`)
             .fontSize(11)
@@ -3654,6 +5333,15 @@ struct Index {
   private EvidenceItem(card: EvidenceCard, compact: boolean = false): void {
     Column({ space: 8 }) {
       Row({ space: 6 }) {
+        if (this.batchMode && !compact) {
+          Checkbox({ name: `evidence-${card.id}`, group: 'evidence-batch' })
+            .select(this.isEvidenceSelected(card.id))
+            .selectedColor(this.accentColor())
+            .enabled(!this.isBatchUpdating)
+            .onChange((value: boolean): void => {
+              this.toggleEvidenceSelection(card.id, value);
+            });
+        }
         Text(this.evidenceKindLabel(card.kind))
           .fontSize(10)
           .fontWeight(FontWeight.Medium)
@@ -3680,6 +5368,10 @@ struct Index {
         .fontColor(this.evidenceLocationStatusColor(card))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%');
+      Text(this.reviewScheduleLabel(card))
+        .fontSize(10)
+        .fontColor(card.nextReviewAt > Date.now() ? this.secondaryText() : this.coralColor())
         .width('100%');
       Text(card.quote)
         .fontSize(compact ? 12 : 13)
@@ -3871,6 +5563,9 @@ struct Index {
             }
             .width('100%');
             Row({ space: 4 }) {
+              this.ToolButton((): string => '加入集合', (): void => {
+                this.startAddToCollection(card.id, 'EVIDENCE');
+              });
               Blank();
               this.ToolButton((): string => '编辑', (): void => {
                 this.startEditEvidence(card);
@@ -3896,8 +5591,11 @@ struct Index {
               (): void => {
                 this.toggleEvidenceStatus(card);
               },
-              (): boolean => this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting
-            );
+                (): boolean => this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting
+              );
+            this.ToolButton((): string => '加入集合', (): void => {
+              this.startAddToCollection(card.id, 'EVIDENCE');
+            });
             Blank();
             this.ToolButton((): string => '编辑', (): void => {
               this.startEditEvidence(card);
@@ -3972,6 +5670,10 @@ struct Index {
               .fontSize(12)
               .fontColor(this.secondaryText())
               .width('100%');
+            Text(`${this.reviewQueueCards().length} 张今日到期`)
+              .fontSize(11)
+              .fontColor(this.coralColor())
+              .width('100%');
           }
           .layoutWeight(1);
           TextInput({ placeholder: '搜索原文、笔记或来源', text: this.reviewSearch })
@@ -3985,9 +5687,12 @@ struct Index {
             .backgroundColor(this.raisedBackground())
             .border({ width: 1, color: this.dividerColor() })
             .borderRadius(6)
-            .onChange((value: string): void => {
-              this.reviewSearch = value;
-            });
+          .onChange((value: string): void => {
+            this.reviewSearch = value;
+            this.selectedEvidenceIds = [];
+            this.showCompareView = false;
+            this.saveWorkspace();
+          });
         }
         .width('100%');
         Row({ space: 7 }) {
@@ -3995,6 +5700,13 @@ struct Index {
           this.ReviewFilterButton('待复习', 'TO_REVIEW');
           this.ReviewFilterButton('已掌握', 'MASTERED');
           Blank();
+          this.ToolButton(
+            (): string => this.batchMode ? '退出批量' : '批量选择',
+            (): void => {
+              this.toggleBatchMode();
+            },
+            (): boolean => !this.isBatchUpdating && this.evidenceCards.length > 0
+          );
           this.AccentButton(
             (): string => this.windowWidth < 900 ?
               `复习 ${this.reviewQueueCards().length}` :
@@ -4017,6 +5729,20 @@ struct Index {
         .width('100%')
         .scrollable(ScrollDirection.Horizontal)
         .scrollBar(BarState.Off);
+        if (this.collections.length > 0) {
+          Scroll() {
+            Row({ space: 8 }) {
+              this.CollectionButton('');
+              ForEach(this.collections, (collection: CollectionRecord): void => {
+                this.CollectionButton(collection.id);
+              }, (collection: CollectionRecord): string => collection.id);
+            }
+          }
+          .width('100%')
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off);
+        }
+        this.BatchReviewToolbar();
       }
       .padding({ left: 22, right: 22, top: 18, bottom: 14 })
       .backgroundColor(this.panelBackground())
@@ -4341,6 +6067,63 @@ struct Index {
       }
       .width(this.compactEditorWidth(560))
       .height(this.compactEditorHeight(560))
+      .padding(20)
+      .borderRadius(8)
+      .backgroundColor(this.panelBackground())
+      .border({ width: 1, color: this.dividerColor() });
+    }
+    .width('100%')
+    .height('100%');
+  }
+
+  @Builder
+  private DuplicateWebConfirmOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.scrimColor())
+        .onClick((): void => {
+          this.cancelDuplicateWebConfirm();
+        });
+      Column({ space: 14 }) {
+        Text('发现相同网页资料')
+          .fontSize(19)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.primaryText())
+          .width('100%');
+        Text(this.duplicateWebDocumentTitle())
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.primaryText())
+          .lineHeight(20)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .padding({ left: 10 })
+          .border({ width: { left: 3 }, color: this.accentColor() });
+        Text(this.duplicateWebDocumentMessage())
+          .fontSize(12)
+          .fontColor(this.secondaryText())
+          .lineHeight(19)
+          .width('100%');
+        Row({ space: 9 }) {
+          this.ToolButton((): string => '继续编辑', (): void => {
+            this.cancelDuplicateWebConfirm();
+          });
+          if (this.duplicateWebDocument() !== undefined) {
+            this.ToolButton((): string => '打开已有资料', (): void => {
+              this.openDuplicateWebDocument();
+            });
+          }
+          this.AccentButton((): string => '仍然保存', (): void => {
+            this.saveDuplicateWebAnyway();
+          });
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.End);
+      }
+      .width(this.compactEditorWidth(500))
       .padding(20)
       .borderRadius(8)
       .backgroundColor(this.panelBackground())
@@ -4736,6 +6519,9 @@ struct Index {
       if (this.showWebEditor) {
         this.WebEditorOverlay();
       }
+      if (this.showDuplicateWebConfirm) {
+        this.DuplicateWebConfirmOverlay();
+      }
       if (this.showPdfEditor) {
         this.PdfEditorOverlay();
       }
@@ -4747,6 +6533,21 @@ struct Index {
       }
       if (this.evidenceDraftAction !== 'NONE') {
         this.EvidenceDraftDiscardOverlay();
+      }
+      if (this.showCollectionManager) {
+        this.CollectionManagerOverlay();
+      }
+      if (this.collectionTargetKind !== 'NONE') {
+        this.CollectionPickerOverlay();
+      }
+      if (this.showRestoreConfirm) {
+        this.RestoreConfirmOverlay();
+      }
+      if (this.showHealthPanel) {
+        this.DataHealthOverlay();
+      }
+      if (this.showCompareView) {
+        this.CompareOverlay();
       }
       if (this.deleteTargetKind !== 'NONE') {
         this.DeleteConfirmOverlay();

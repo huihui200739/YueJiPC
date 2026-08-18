@@ -68,13 +68,15 @@ export class ExportService {
       if (document.kind === 'WEB') {
         lines.push(`来源：${document.source}`);
         lines.push('');
-        if (document.excerpt.length > 0) {
-          lines.push(this.blockquote(document.excerpt));
-          lines.push('');
-        }
-        if (document.note.length > 0) {
-          lines.push(this.cleanText(document.note));
-          lines.push('');
+        if (documentCards.length === 0) {
+          if (document.excerpt.length > 0) {
+            lines.push(this.blockquote(document.excerpt));
+            lines.push('');
+          }
+          if (document.note.length > 0) {
+            lines.push(this.cleanText(document.note));
+            lines.push('');
+          }
         }
         if (document.tags.length > 0) {
           lines.push(`标签：${tagList(document.tags).map((tag: string): string => `#${tag}`).join(' ')}`);
@@ -86,7 +88,9 @@ export class ExportService {
         lines.push('');
         lines.push(this.blockquote(card.quote));
         lines.push('');
-        lines.push(`来源：${this.cleanText(document.title)}，第 ${card.pageIndex + 1} 页`);
+        lines.push(document.kind === 'WEB' ?
+          `来源：${this.cleanText(document.title)}，网页摘录` :
+          `来源：${this.cleanText(document.title)}，第 ${card.pageIndex + 1} 页`);
         lines.push('');
         if (card.note.length > 0) {
           lines.push(this.cleanText(card.note));

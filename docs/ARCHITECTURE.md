@@ -16,6 +16,10 @@ flowchart LR
   IMPORT["ImportService<br/>选择 / 拖放 / 沙箱复制"]
   LINK["LinkService<br/>校验 / 系统浏览器"]
   EXPORT["ExportService<br/>Markdown 生成 / 保存"]
+  COLLECTION["CollectionRepository<br/>主题集合 / 批量关系"]
+  BACKUP["BackupService<br/>JSON 备份 / 恢复 / 删除保护"]
+  HEALTH["DataHealthService<br/>数据健康检查"]
+  DIAGNOSTIC["DiagnosticService<br/>脱敏诊断导出"]
   SETTINGS["SettingsService<br/>Preferences"]
   LIBRARY["LibraryRepository"]
   EVIDENCE["EvidenceRepository"]
@@ -26,12 +30,19 @@ flowchart LR
   UI --> IMPORT
   UI --> LINK
   UI --> EXPORT
+  UI --> COLLECTION
+  UI --> BACKUP
+  UI --> HEALTH
+  UI --> DIAGNOSTIC
   UI --> SETTINGS
   UI --> LIBRARY
   UI --> EVIDENCE
   IMPORT --> FILES
   LIBRARY --> DB
   EVIDENCE --> DB
+  COLLECTION --> DB
+  BACKUP --> DB
+  HEALTH --> DB
 ```
 
 ## 证据卡闭环
@@ -102,9 +113,34 @@ sequenceDiagram
 4. 校验成功后把阅读页限制在有效范围，更新页数并使用原资料 ID 打开阅读器。
 5. 证据卡通过未变化的资料 ID 自动恢复标注和来源回跳。
 
+## 备份、恢复与删除保护
+
+1. 用户主动选择保存位置后，`BackupService` 导出版本化 JSON；JSON 保存资料、证据卡、主题集合、关联和界面设置，不包含 PDF 二进制文件。
+2. 恢复前先把当前结构化数据保存到应用沙箱快照目录，再校验备份结构并通过数据库事务替换记录。
+3. 恢复时把 PDF 资料路径标准化为当前设备的 `files/library/{documentId}/source.pdf`。由于备份不携带 PDF 文件，缺失副本会保留资料卡并提示重新导入。
+4. 删除 PDF 前保存删除前快照，并把 PDF 移入本地删除归档；数据库删除失败时尝试恢复归档文件。
+5. 快照只保留最近若干份，避免重复操作无限增长。
+
+## 数据健康与诊断
+
+`DataHealthService` 在启动和用户主动检查时验证：
+
+- PDF 是否存在、是否位于当前应用沙箱的标准路径，以及是否存在孤立 PDF；
+- 证据卡来源、页码和选区坐标是否可恢复；
+- 主题集合、资料和证据卡之间的关联是否完整；
+- 网页资料是否使用 `http` 或 `https` 地址。
+
+`DiagnosticService` 只导出应用版本、API、数据库版本、数量和问题计数，不导出 PDF 正文、摘录、笔记、网址或用户身份信息。
+
+## 数据库升级
+
+数据库通过 `schema_meta` 保存当前 schema 版本。应用初始化时先创建基础表、索引和清理触发器，再执行从旧版本到当前版本的迁移；不支持降级到高于当前应用的数据库版本。
+
 ## 已知边界
 
 - 加密 PDF 首版不支持密码输入。
 - 网页资料不抓取正文，只保存用户手动提供的链接、摘录和笔记。
 - 标注显示由证据卡重建，不修改原始 PDF 文件。
-- 当前不包含 JSON 备份恢复和“另存为带标注 PDF”。
+- JSON 备份不包含 PDF 二进制文件，跨设备恢复后仍需重新导入缺失 PDF。
+- 系统级备份恢复能力保持关闭，应用内 JSON 备份由用户主动操作。
+- 当前不包含“另存为带标注 PDF”。

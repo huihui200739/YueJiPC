@@ -70,6 +70,7 @@ export class LinkService {
       favorite: false,
       excerpt: draft.excerpt.trim(),
       note: draft.note.trim(),
+      contentHash: '',
       createdAt: now,
       lastReadAt: now
     };

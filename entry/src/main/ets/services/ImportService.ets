@@ -2,6 +2,7 @@ import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { createId, DocumentRecord } from '../model/Models';
+import { FileFingerprintService } from './FileFingerprintService';
 
 const LOG_DOMAIN: number = 0x59A1;
 const LOG_TAG: string = 'YueJiImport';
@@ -12,6 +13,7 @@ export interface ImportedPdf {
 }
 
 export class ImportService {
+  private fingerprintService: FileFingerprintService = new FileFingerprintService();
   private fileNameFromUri(uri: string): string {
     const cleanUri = uri.split('?')[0];
     const parts = cleanUri.split('/');
@@ -51,6 +53,18 @@ export class ImportService {
     const libraryDirectory = `${context.filesDir}/library/${documentId}`;
     const targetPath = `${libraryDirectory}/source.pdf`;
     await this.copyPdfToPath(uri, targetPath);
+    let contentHash: string;
+    try {
+      contentHash = await this.fingerprintService.sha256(targetPath);
+    } catch (error) {
+      await this.removeImportedPdf(targetPath);
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'PDF fingerprint failed after copy: %{public}s',
+        JSON.stringify(error));
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('PDF 完整性校验失败');
+    }
     const now = Date.now();
     return {
       originalUri: uri,
@@ -65,6 +79,7 @@ export class ImportService {
         favorite: false,
         excerpt: '',
         note: '',
+        contentHash: contentHash,
         createdAt: now,
         lastReadAt: now
       }

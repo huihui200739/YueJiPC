@@ -9,6 +9,17 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultHighlightColor: 0xFFFFD95A
 };
 
+function isBooleanValue(value: Object): boolean {
+  return typeof value === 'boolean';
+}
+
+function isColorValue(value: Object): boolean {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 0xFFFFFFFF;
+}
+
 export class SettingsService {
   private store: preferences.Preferences | undefined;
 
@@ -18,15 +29,29 @@ export class SettingsService {
 
   async load(): Promise<AppSettings> {
     if (this.store === undefined) {
-      return DEFAULT_SETTINGS;
+      return {
+        darkMode: DEFAULT_SETTINGS.darkMode,
+        focusMode: DEFAULT_SETTINGS.focusMode,
+        leftSidebarOpen: DEFAULT_SETTINGS.leftSidebarOpen,
+        rightSidebarOpen: DEFAULT_SETTINGS.rightSidebarOpen,
+        defaultHighlightColor: DEFAULT_SETTINGS.defaultHighlightColor
+      };
     }
+    const darkMode = await this.store.get('darkMode', DEFAULT_SETTINGS.darkMode);
+    const focusMode = await this.store.get('focusMode', DEFAULT_SETTINGS.focusMode);
+    const leftSidebarOpen = await this.store.get('leftSidebarOpen', DEFAULT_SETTINGS.leftSidebarOpen);
+    const rightSidebarOpen = await this.store.get('rightSidebarOpen', DEFAULT_SETTINGS.rightSidebarOpen);
+    const defaultHighlightColor =
+      await this.store.get('defaultHighlightColor', DEFAULT_SETTINGS.defaultHighlightColor);
     return {
-      darkMode: await this.store.get('darkMode', DEFAULT_SETTINGS.darkMode) as boolean,
-      focusMode: await this.store.get('focusMode', DEFAULT_SETTINGS.focusMode) as boolean,
-      leftSidebarOpen: await this.store.get('leftSidebarOpen', DEFAULT_SETTINGS.leftSidebarOpen) as boolean,
-      rightSidebarOpen: await this.store.get('rightSidebarOpen', DEFAULT_SETTINGS.rightSidebarOpen) as boolean,
-      defaultHighlightColor:
-        await this.store.get('defaultHighlightColor', DEFAULT_SETTINGS.defaultHighlightColor) as number
+      darkMode: isBooleanValue(darkMode) ? darkMode as boolean : DEFAULT_SETTINGS.darkMode,
+      focusMode: isBooleanValue(focusMode) ? focusMode as boolean : DEFAULT_SETTINGS.focusMode,
+      leftSidebarOpen: isBooleanValue(leftSidebarOpen) ?
+        leftSidebarOpen as boolean : DEFAULT_SETTINGS.leftSidebarOpen,
+      rightSidebarOpen: isBooleanValue(rightSidebarOpen) ?
+        rightSidebarOpen as boolean : DEFAULT_SETTINGS.rightSidebarOpen,
+      defaultHighlightColor: isColorValue(defaultHighlightColor) ?
+        defaultHighlightColor as number : DEFAULT_SETTINGS.defaultHighlightColor
     };
   }
 
