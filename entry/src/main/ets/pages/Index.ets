@@ -840,14 +840,100 @@ struct Index {
 
   private async reloadData(): Promise<void> {
     await this.migrateLegacyWebEvidenceCards();
-    this.documents = await this.libraryRepository.listAll();
-    this.evidenceCards = await this.evidenceRepository.listAll();
-    this.collections = await this.collectionRepository.listAll();
-    this.collectionItems = await this.collectionRepository.listAllItems();
+    const documents = await this.libraryRepository.listAll();
+    const evidenceCards = await this.evidenceRepository.listAll();
+    const collections = await this.collectionRepository.listAll();
+    const collectionItems = await this.collectionRepository.listAllItems();
+    this.documents = documents;
+    this.evidenceCards = evidenceCards;
+    this.collections = collections;
+    this.collectionItems = collectionItems;
     if (this.selectedCollectionId.length > 0 &&
-      !this.collections.some((collection: CollectionRecord): boolean =>
+      !collections.some((collection: CollectionRecord): boolean =>
         collection.id === this.selectedCollectionId)) {
       this.selectedCollectionId = '';
+    }
+  }
+
+  private replaceLocalDocument(updatedDocument: DocumentRecord): void {
+    const replaced = this.documents.some((document: DocumentRecord): boolean =>
+      document.id === updatedDocument.id);
+    const documents = replaced ?
+      this.documents.map((document: DocumentRecord): DocumentRecord =>
+        document.id === updatedDocument.id ? updatedDocument : document) :
+      [updatedDocument, ...this.documents];
+    this.documents = documents.sort((left: DocumentRecord, right: DocumentRecord): number =>
+      right.lastReadAt - left.lastReadAt);
+  }
+
+  private removeLocalDocumentState(documentId: string): void {
+    this.documents = this.documents.filter((document: DocumentRecord): boolean =>
+      document.id !== documentId);
+    this.evidenceCards = this.evidenceCards.filter((card: EvidenceCard): boolean =>
+      card.documentId !== documentId);
+    this.collectionItems = this.collectionItems.filter((item: CollectionItem): boolean =>
+      !(item.itemKind === 'DOCUMENT' && item.itemId === documentId) &&
+      !(item.itemKind === 'EVIDENCE' &&
+        !this.evidenceCards.some((card: EvidenceCard): boolean => card.id === item.itemId)));
+  }
+
+  private applyLocalWebSave(
+    document: DocumentRecord,
+    card: EvidenceCard | undefined,
+    removeCardIds: string[]
+  ): void {
+    this.replaceLocalDocument(document);
+    const removedIds = removeCardIds.slice();
+    let cards = this.evidenceCards.filter((item: EvidenceCard): boolean =>
+      !removedIds.includes(item.id) && (card === undefined || item.id !== card.id));
+    if (card !== undefined) {
+      cards = [card, ...cards];
+    }
+    this.evidenceCards = cards.sort((left: EvidenceCard, right: EvidenceCard): number =>
+      right.updatedAt - left.updatedAt);
+  }
+
+  private replaceLocalCollection(updatedCollection: CollectionRecord): void {
+    const replaced = this.collections.some((collection: CollectionRecord): boolean =>
+      collection.id === updatedCollection.id);
+    const collections = replaced ?
+      this.collections.map((collection: CollectionRecord): CollectionRecord =>
+        collection.id === updatedCollection.id ? updatedCollection : collection) :
+      [updatedCollection, ...this.collections];
+    this.collections = collections.sort((left: CollectionRecord, right: CollectionRecord): number =>
+      right.updatedAt - left.updatedAt);
+  }
+
+  private removeLocalCollectionState(collectionId: string): void {
+    this.collections = this.collections.filter((collection: CollectionRecord): boolean =>
+      collection.id !== collectionId);
+    this.collectionItems = this.collectionItems.filter((item: CollectionItem): boolean =>
+      item.collectionId !== collectionId);
+    if (this.selectedCollectionId === collectionId) {
+      this.selectedCollectionId = '';
+    }
+  }
+
+  private applyLocalCollectionItem(
+    collectionId: string,
+    itemId: string,
+    itemKind: CollectionItemKind,
+    added: boolean
+  ): void {
+    this.collectionItems = this.collectionItems.filter((item: CollectionItem): boolean =>
+      !(item.collectionId === collectionId &&
+        item.itemId === itemId &&
+        item.itemKind === itemKind));
+    if (added) {
+      this.collectionItems = [
+        ...this.collectionItems,
+        {
+          collectionId: collectionId,
+          itemId: itemId,
+          itemKind: itemKind,
+          createdAt: Date.now()
+        }
+      ];
     }
   }
 
@@ -1122,9 +1208,20 @@ struct Index {
       await this.importService.removeImportedPdf(imported.record.source);
       throw new Error('PDF metadata persistence failed');
     }
-    await this.reloadData();
+    let listReloaded = true;
+    try {
+      await this.reloadData();
+    } catch (error) {
+      listReloaded = false;
+      this.replaceLocalDocument(imported.record);
+    }
     this.activateLoadedPdf(imported.record);
-    this.showTransientStatus(`已导入 ${imported.record.title}，共 ${imported.record.pageCount} 页`);
+    if (listReloaded) {
+      this.showTransientStatus(`已导入 ${imported.record.title}，共 ${imported.record.pageCount} 页`);
+    } else {
+      this.statusMessage =
+        `已导入 ${imported.record.title}，共 ${imported.record.pageCount} 页；资料列表将在下次打开时重新校验`;
+    }
   }
 
   private activateLoadedPdf(record: DocumentRecord): void {
@@ -2295,6 +2392,10 @@ struct Index {
     if (this.isSavingCollection) {
       return;
     }
+    this.resetCollectionForm();
+  }
+
+  private resetCollectionForm(): void {
     this.editingCollectionId = '';
     this.collectionName = '';
     this.collectionDescription = '';
@@ -2318,21 +2419,58 @@ struct Index {
     try {
       if (this.editingCollectionId.length === 0) {
         const now = Date.now();
-        await this.collectionRepository.insert({
+        const createdCollection: CollectionRecord = {
           id: createId('collection'),
           name: name,
           description: description,
           createdAt: now,
           updatedAt: now
-        });
-        await this.reloadData();
-        this.cancelCollectionForm();
-        this.showTransientStatus(`已创建主题集合“${name}”`);
+        };
+        await this.collectionRepository.insert(createdCollection);
+        let listReloaded = true;
+        try {
+          await this.reloadData();
+        } catch (error) {
+          listReloaded = false;
+          this.replaceLocalCollection(createdCollection);
+        }
+        this.resetCollectionForm();
+        if (listReloaded) {
+          this.showTransientStatus(`已创建主题集合“${name}”`);
+        } else {
+          this.statusMessage = `主题集合“${name}”已创建，列表将在下次打开时重新校验`;
+        }
       } else {
-        await this.collectionRepository.update(this.editingCollectionId, name, description);
-        await this.reloadData();
-        this.cancelCollectionForm();
-        this.showTransientStatus(`已更新主题集合“${name}”`);
+        const existingCollection = this.collectionById(this.editingCollectionId);
+        if (existingCollection === undefined) {
+          this.statusMessage = '当前主题集合已不存在，无法保存修改';
+          return;
+        }
+        const updatedAt = await this.collectionRepository.update(
+          this.editingCollectionId,
+          name,
+          description
+        );
+        const updatedCollection: CollectionRecord = {
+          id: existingCollection.id,
+          name: name,
+          description: description,
+          createdAt: existingCollection.createdAt,
+          updatedAt: updatedAt
+        };
+        let listReloaded = true;
+        try {
+          await this.reloadData();
+        } catch (error) {
+          listReloaded = false;
+          this.replaceLocalCollection(updatedCollection);
+        }
+        this.resetCollectionForm();
+        if (listReloaded) {
+          this.showTransientStatus(`已更新主题集合“${name}”`);
+        } else {
+          this.statusMessage = `主题集合“${name}”已更新，列表将在下次打开时重新校验`;
+        }
       }
     } catch (error) {
       this.statusMessage = error instanceof Error && error.message === 'Collection name already exists' ?
@@ -2380,14 +2518,26 @@ struct Index {
     const itemId = this.collectionTargetId;
     this.isUpdatingCollectionItem = true;
     try {
-      if (this.collectionHasItem(collection.id, itemId, itemKind)) {
+      const added = !this.collectionHasItem(collection.id, itemId, itemKind);
+      if (!added) {
         await this.collectionRepository.removeItem(collection.id, itemId, itemKind);
-        this.showTransientStatus(`已从“${collection.name}”移出`);
       } else {
         await this.collectionRepository.addItem(collection.id, itemId, itemKind);
-        this.showTransientStatus(`已加入“${collection.name}”`);
       }
-      this.collectionItems = await this.collectionRepository.listAllItems();
+      let listReloaded = true;
+      try {
+        this.collectionItems = await this.collectionRepository.listAllItems();
+      } catch (error) {
+        listReloaded = false;
+        this.applyLocalCollectionItem(collection.id, itemId, itemKind, added);
+      }
+      if (listReloaded) {
+        this.showTransientStatus(added ? `已加入“${collection.name}”` : `已从“${collection.name}”移出`);
+      } else {
+        this.statusMessage = added ?
+          `已加入“${collection.name}”，集合列表将在下次打开时重新校验` :
+          `已从“${collection.name}”移出，集合列表将在下次打开时重新校验`;
+      }
     } catch (error) {
       this.statusMessage = '集合关联保存失败';
     } finally {
@@ -2398,11 +2548,18 @@ struct Index {
   private async deleteCollection(collection: CollectionRecord): Promise<void> {
     try {
       await this.collectionRepository.delete(collection.id);
-      if (this.selectedCollectionId === collection.id) {
-        this.selectedCollectionId = '';
+      let listReloaded = true;
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        this.removeLocalCollectionState(collection.id);
       }
-      await this.reloadData();
-      this.showTransientStatus(`已删除主题集合“${collection.name}”`);
+      if (listReloaded) {
+        this.showTransientStatus(`已删除主题集合“${collection.name}”`);
+      } else {
+        this.statusMessage = `主题集合“${collection.name}”已删除，列表将在下次打开时重新校验`;
+      }
     } catch (error) {
       this.statusMessage = '主题集合删除失败';
     }
@@ -2732,9 +2889,32 @@ struct Index {
         cards.map((card: EvidenceCard): string => card.id),
         status
       );
-      await this.reloadData();
+      let listReloaded = true;
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        const updatedAt = Date.now();
+        cards.forEach((card: EvidenceCard): void => {
+          this.replaceLocalEvidenceCard(this.localEvidenceCard(
+            card,
+            card.note,
+            card.tags,
+            card.kind,
+            card.color,
+            status,
+            updatedAt,
+            true
+          ));
+        });
+      }
       this.selectedEvidenceIds = [];
-      this.showTransientStatus(`已批量${status === 'MASTERED' ? '标记为掌握' : '加入待复习'} ${count} 张`);
+      if (listReloaded) {
+        this.showTransientStatus(`已批量${status === 'MASTERED' ? '标记为掌握' : '加入待复习'} ${count} 张`);
+      } else {
+        this.statusMessage =
+          `已批量${status === 'MASTERED' ? '标记为掌握' : '加入待复习'} ${count} 张；列表将在下次打开时重新校验`;
+      }
     } catch (error) {
       this.statusMessage = '批量更新复习状态失败，未完成的操作已回滚';
     } finally {
@@ -2761,9 +2941,42 @@ struct Index {
         cards.map((card: EvidenceCard): string => card.id),
         tags
       );
-      await this.reloadData();
+      let listReloaded = true;
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        const normalizedTags = normalizeTags(tags);
+        const updatedAt = Date.now();
+        cards.forEach((card: EvidenceCard): void => {
+          const mergedTags = normalizeTags(
+            card.tags.length > 0 ? `${card.tags}, ${normalizedTags}` : normalizedTags
+          );
+          this.replaceLocalEvidenceCard({
+            id: card.id,
+            documentId: card.documentId,
+            quote: card.quote,
+            pageIndex: card.pageIndex,
+            rectsJson: card.rectsJson,
+            note: card.note,
+            kind: card.kind,
+            color: card.color,
+            tags: mergedTags,
+            reviewStatus: card.reviewStatus,
+            lastReviewedAt: card.lastReviewedAt,
+            nextReviewAt: card.nextReviewAt,
+            reviewCount: card.reviewCount,
+            createdAt: card.createdAt,
+            updatedAt: updatedAt
+          });
+        });
+      }
       this.batchTags = '';
-      this.showTransientStatus(`已为 ${count} 张证据卡追加标签`);
+      if (listReloaded) {
+        this.showTransientStatus(`已为 ${count} 张证据卡追加标签`);
+      } else {
+        this.statusMessage = `已为 ${count} 张证据卡追加标签；列表将在下次打开时重新校验`;
+      }
     } catch (error) {
       this.statusMessage = '批量追加标签失败，未完成的操作已回滚';
     } finally {
@@ -2823,10 +3036,37 @@ struct Index {
   }
 
   private async toggleFavorite(document: DocumentRecord): Promise<void> {
+    const favorite = !document.favorite;
     try {
-      await this.libraryRepository.setFavorite(document.id, !document.favorite);
-      await this.reloadData();
-      this.showTransientStatus(document.favorite ? '已取消收藏' : '已加入收藏');
+      await this.libraryRepository.setFavorite(document.id, favorite);
+      let listReloaded = true;
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        this.replaceLocalDocument({
+          id: document.id,
+          kind: document.kind,
+          title: document.title,
+          source: document.source,
+          pageCount: document.pageCount,
+          currentPage: document.currentPage,
+          tags: document.tags,
+          favorite: favorite,
+          excerpt: document.excerpt,
+          note: document.note,
+          contentHash: document.contentHash,
+          createdAt: document.createdAt,
+          lastReadAt: document.lastReadAt
+        });
+      }
+      if (listReloaded) {
+        this.showTransientStatus(favorite ? '已加入收藏' : '已取消收藏');
+      } else {
+        this.statusMessage = favorite ?
+          '已加入收藏，资料列表将在下次打开时重新校验' :
+          '已取消收藏，资料列表将在下次打开时重新校验';
+      }
     } catch (error) {
       this.statusMessage = '收藏状态保存失败';
     }
@@ -2838,6 +3078,7 @@ struct Index {
     let restoreWarning = false;
     let archivedPdf: DeletedPdfArchive | undefined = undefined;
     let snapshotFileName: string = '';
+    let listReloaded = true;
     try {
       const context = this.hostContext();
       if (context !== undefined) {
@@ -2882,12 +3123,18 @@ struct Index {
           cleanupWarning = true;
         }
       }
-      await this.reloadData();
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        this.removeLocalDocumentState(document.id);
+      }
       this.refreshHealthReport();
       this.showTransientStatus(
         `已从本地资料库删除 ${document.title}` +
         (snapshotFileName.length > 0 ? `；删除前快照已保存为 ${snapshotFileName}` : '') +
-        (cleanupWarning ? '；部分临时文件需要稍后清理' : '')
+        (cleanupWarning ? '；部分临时文件需要稍后清理' : '') +
+        (!listReloaded ? '；资料列表将在下次打开时重新校验' : '')
       );
     } catch (error) {
       if (archivedPdf !== undefined && !recordDeleted) {
@@ -2897,9 +3144,17 @@ struct Index {
           restoreWarning = true;
         }
       }
-      await this.reloadData();
+      if (recordDeleted) {
+        this.removeLocalDocumentState(document.id);
+      }
+      try {
+        await this.reloadData();
+      } catch (reloadError) {
+        listReloaded = false;
+      }
       this.statusMessage = recordDeleted ?
-        '资料和关联证据已删除，但部分本地文件可能需要稍后清理' :
+        `资料和关联证据已删除，但部分本地文件可能需要稍后清理` +
+          (!listReloaded ? '；资料列表将在下次打开时重新校验' : '') :
         (restoreWarning ?
           '资料删除失败，PDF 暂未恢复；资料记录和证据卡仍保留，请检查数据健康状态' :
           '资料删除失败，现有资料和证据卡未被修改');
@@ -3084,17 +3339,48 @@ struct Index {
       return;
     }
     const tags = normalizeTags(this.pdfTags);
+    const editingPdfId = this.editingPdfId;
+    const existingDocument = this.documentById(editingPdfId);
+    if (existingDocument === undefined) {
+      this.statusMessage = '当前 PDF 资料已不存在，无法保存修改';
+      return;
+    }
+    const updatedDocument: DocumentRecord = {
+      id: existingDocument.id,
+      kind: existingDocument.kind,
+      title: title,
+      source: existingDocument.source,
+      pageCount: existingDocument.pageCount,
+      currentPage: existingDocument.currentPage,
+      tags: tags,
+      favorite: existingDocument.favorite,
+      excerpt: existingDocument.excerpt,
+      note: existingDocument.note,
+      contentHash: existingDocument.contentHash,
+      createdAt: existingDocument.createdAt,
+      lastReadAt: existingDocument.lastReadAt
+    };
     this.isSavingEditor = true;
     this.statusMessage = '正在保存 PDF 资料信息…';
     try {
       await this.libraryRepository.updatePdfDetails(
-        this.editingPdfId,
+        editingPdfId,
         title,
         tags
       );
-      await this.reloadData();
+      let listReloaded = true;
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        this.replaceLocalDocument(updatedDocument);
+      }
       this.closeEditor('PDF');
-      this.showTransientStatus('PDF 资料信息已更新');
+      if (listReloaded) {
+        this.showTransientStatus('PDF 资料信息已更新');
+      } else {
+        this.statusMessage = 'PDF 资料信息已更新，资料列表将在下次打开时重新校验';
+      }
     } catch (error) {
       this.statusMessage = 'PDF 资料信息保存失败';
     } finally {
@@ -3141,6 +3427,9 @@ struct Index {
     }
     this.isSavingEditor = true;
     this.statusMessage = '正在保存网页资料卡…';
+    let savedDocument: DocumentRecord | undefined = undefined;
+    let savedCard: EvidenceCard | undefined = undefined;
+    let removedCardIds: string[] = [];
     try {
       if (isNewDocument) {
         const created = this.linkService.createDocument(draft);
@@ -3148,6 +3437,8 @@ struct Index {
           this.createWebEvidenceCard(created, created.excerpt, created.note, created.tags) :
           undefined;
         await this.libraryRepository.insertWebWithEvidence(created, card);
+        savedDocument = created;
+        savedCard = card;
       } else {
         const existingDocument = this.documentById(editingWebId);
         if (existingDocument === undefined) {
@@ -3197,10 +3488,26 @@ struct Index {
           existingCards.slice(1).map((item: EvidenceCard): string => item.id) :
           existingCards.map((item: EvidenceCard): string => item.id);
         await this.libraryRepository.updateWebWithEvidence(updated, card, removeCardIds);
+        savedDocument = updated;
+        savedCard = card;
+        removedCardIds = removeCardIds;
       }
-      await this.reloadData();
+      let listReloaded = true;
+      try {
+        await this.reloadData();
+      } catch (error) {
+        listReloaded = false;
+        if (savedDocument !== undefined) {
+          this.applyLocalWebSave(savedDocument, savedCard, removedCardIds);
+        }
+      }
       this.closeEditor('WEB');
-      this.showTransientStatus(isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新');
+      if (listReloaded) {
+        this.showTransientStatus(isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新');
+      } else {
+        this.statusMessage =
+          `${isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新'}，资料列表将在下次打开时重新校验`;
+      }
     } catch (error) {
       this.statusMessage = '网页资料卡保存失败';
     } finally {
@@ -3254,11 +3561,32 @@ struct Index {
     }
     try {
       await this.linkService.open(context, document.source);
+      let lastReadAt = 0;
       try {
-        await this.libraryRepository.updateLastReadAt(document.id);
-        await this.reloadData();
+        lastReadAt = await this.libraryRepository.updateLastReadAt(document.id);
       } catch (storageError) {
         this.statusMessage = `已打开 ${document.title}，但最近阅读时间未能保存`;
+        return;
+      }
+      try {
+        await this.reloadData();
+      } catch (storageError) {
+        this.replaceLocalDocument({
+          id: document.id,
+          kind: document.kind,
+          title: document.title,
+          source: document.source,
+          pageCount: document.pageCount,
+          currentPage: document.currentPage,
+          tags: document.tags,
+          favorite: document.favorite,
+          excerpt: document.excerpt,
+          note: document.note,
+          contentHash: document.contentHash,
+          createdAt: document.createdAt,
+          lastReadAt: lastReadAt
+        });
+        this.statusMessage = `已打开 ${document.title}，最近阅读时间已保存；资料列表将在下次打开时重新校验`;
         return;
       }
       this.showTransientStatus(`已通过系统浏览器打开 ${document.title}`);

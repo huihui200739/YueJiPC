@@ -167,11 +167,13 @@ export class LibraryRepository {
     await this.updateById(id, values);
   }
 
-  async updateLastReadAt(id: string): Promise<void> {
+  async updateLastReadAt(id: string): Promise<number> {
+    const lastReadAt = Date.now();
     const values: relationalStore.ValuesBucket = {
-      last_read_at: Date.now()
+      last_read_at: lastReadAt
     };
     await this.updateById(id, values);
+    return lastReadAt;
   }
 
   async updatePdfMetadata(id: string, pageCount: number, currentPage: number): Promise<void> {

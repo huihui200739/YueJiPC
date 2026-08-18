@@ -56,7 +56,7 @@ export class CollectionRepository {
     }
   }
 
-  async update(id: string, name: string, description: string): Promise<void> {
+  async update(id: string, name: string, description: string): Promise<number> {
     const normalizedName = name.trim();
     const normalizedDescription = description.trim();
     if (normalizedName.length === 0 || normalizedName.length > MAX_COLLECTION_NAME_LENGTH ||
@@ -64,10 +64,11 @@ export class CollectionRepository {
       throw new Error('Collection input is invalid');
     }
     await this.ensureUniqueName(normalizedName, id);
+    const updatedAt = Date.now();
     const values: relationalStore.ValuesBucket = {
       name: normalizedName,
       description: normalizedDescription,
-      updated_at: Date.now()
+      updated_at: updatedAt
     };
     const predicates = new relationalStore.RdbPredicates('collections');
     predicates.equalTo('id', id);
@@ -75,6 +76,7 @@ export class CollectionRepository {
     if (count !== 1) {
       throw new Error('Collection was not updated');
     }
+    return updatedAt;
   }
 
   async delete(id: string): Promise<void> {
