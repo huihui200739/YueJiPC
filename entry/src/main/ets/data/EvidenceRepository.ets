@@ -40,28 +40,44 @@ export class EvidenceRepository {
     return this.query(predicates);
   }
 
-  async updateCard(id: string, note: string, tags: string, reviewStatus: ReviewStatus): Promise<void> {
+  async updateCard(
+    id: string,
+    note: string,
+    tags: string,
+    kind: EvidenceKind,
+    color: number,
+    reviewStatus: ReviewStatus
+  ): Promise<number> {
+    const updatedAt = Date.now();
     const values: relationalStore.ValuesBucket = {
       note: note,
       tags: tags,
+      kind: kind,
+      color: color,
       review_status: reviewStatus,
-      updated_at: Date.now()
+      updated_at: updatedAt
     };
     await this.updateById(id, values);
+    return updatedAt;
   }
 
-  async setReviewStatus(id: string, reviewStatus: ReviewStatus): Promise<void> {
+  async setReviewStatus(id: string, reviewStatus: ReviewStatus): Promise<number> {
+    const updatedAt = Date.now();
     const values: relationalStore.ValuesBucket = {
       review_status: reviewStatus,
-      updated_at: Date.now()
+      updated_at: updatedAt
     };
     await this.updateById(id, values);
+    return updatedAt;
   }
 
   async delete(id: string): Promise<void> {
     const predicates = new relationalStore.RdbPredicates('evidence_cards');
     predicates.equalTo('id', id);
-    await this.database.getStore().delete(predicates);
+    const deletedCount = await this.database.getStore().delete(predicates);
+    if (deletedCount !== 1) {
+      throw new Error('Evidence card was not deleted');
+    }
   }
 
   async deleteByDocument(documentId: string): Promise<void> {
@@ -73,7 +89,10 @@ export class EvidenceRepository {
   private async updateById(id: string, values: relationalStore.ValuesBucket): Promise<void> {
     const predicates = new relationalStore.RdbPredicates('evidence_cards');
     predicates.equalTo('id', id);
-    await this.database.getStore().update(values, predicates);
+    const updatedCount = await this.database.getStore().update(values, predicates);
+    if (updatedCount !== 1) {
+      throw new Error('Evidence card was not updated');
+    }
   }
 
   private async query(predicates: relationalStore.RdbPredicates): Promise<EvidenceCard[]> {

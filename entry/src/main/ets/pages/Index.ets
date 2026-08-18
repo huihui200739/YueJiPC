@@ -87,6 +87,10 @@ struct Index {
   @State private editingEvidenceId: string = '';
   @State private editingEvidenceNote: string = '';
   @State private editingEvidenceTags: string = '';
+  @State private editingEvidenceKind: EvidenceKind = 'HIGHLIGHT';
+  @State private editingEvidenceColor: number = 0xFFFFD95A;
+  @State private editingEvidenceReviewStatus: ReviewStatus = 'TO_REVIEW';
+  @State private updatingEvidenceStatusId: string = '';
   @State private searchText: string = '';
   @State private searchedText: string = '';
   @State private searchCount: number = 0;
@@ -444,7 +448,11 @@ struct Index {
     if (card === undefined) {
       return true;
     }
-    return this.editingEvidenceNote !== card.note || this.editingEvidenceTags !== card.tags;
+    return this.editingEvidenceNote !== card.note ||
+      this.editingEvidenceTags !== card.tags ||
+      this.editingEvidenceKind !== card.kind ||
+      this.editingEvidenceColor !== card.color ||
+      this.editingEvidenceReviewStatus !== card.reviewStatus;
   }
 
   private hasEditorDraft(kind: EditorDraftKind): boolean {
@@ -478,6 +486,9 @@ struct Index {
       this.editingEvidenceId = '';
       this.editingEvidenceNote = '';
       this.editingEvidenceTags = '';
+      this.editingEvidenceKind = 'HIGHLIGHT';
+      this.editingEvidenceColor = 0xFFFFD95A;
+      this.editingEvidenceReviewStatus = 'TO_REVIEW';
     }
   }
 
@@ -608,7 +619,7 @@ struct Index {
     if (this.editorDraftKind === 'PDF') {
       return '资料标题或标签中的修改尚未保存。';
     }
-    return '证据卡的笔记或标签修改尚未保存。';
+    return '证据卡的标注样式、复习状态、笔记或标签修改尚未保存。';
   }
 
   private selectedSourceLabel(): string {
@@ -1110,11 +1121,24 @@ struct Index {
         pdfViewManager.SupportedAnnotationType.UNDERLINE :
         pdfViewManager.SupportedAnnotationType.HIGHLIGHT;
       this.pdfController.addMarkupAnnotation(type, selectedRects, card.color);
-      this.evidenceCards = await this.evidenceRepository.listAll();
+      let listReloaded = true;
+      try {
+        this.evidenceCards = await this.evidenceRepository.listAll();
+      } catch (error) {
+        listReloaded = false;
+        this.evidenceCards = [
+          card,
+          ...this.evidenceCards.filter((item: EvidenceCard): boolean => item.id !== card.id)
+        ];
+      }
       this.resetEvidenceDraft();
-      this.showTransientStatus(
-        `证据卡已保存：${this.documentTitle(card.documentId)}，第 ${card.pageIndex + 1} 页`
-      );
+      if (listReloaded) {
+        this.showTransientStatus(
+          `证据卡已保存：${this.documentTitle(card.documentId)}，第 ${card.pageIndex + 1} 页`
+        );
+      } else {
+        this.statusMessage = '证据卡已保存，完整列表将在下次打开时重新校验';
+      }
     } catch (error) {
       if (databaseInserted) {
         try {
@@ -1132,7 +1156,9 @@ struct Index {
   }
 
   private startEditEvidence(card: EvidenceCard): void {
-    if (this.editingEvidenceId === card.id) {
+    if (this.editingEvidenceId === card.id ||
+      this.updatingEvidenceStatusId.length > 0 ||
+      this.isDeleting) {
       return;
     }
     if (this.editingEvidenceId.length > 0) {
@@ -1144,7 +1170,40 @@ struct Index {
     this.editingEvidenceId = card.id;
     this.editingEvidenceNote = card.note;
     this.editingEvidenceTags = card.tags;
+    this.editingEvidenceKind = card.kind;
+    this.editingEvidenceColor = card.color;
+    this.editingEvidenceReviewStatus = card.reviewStatus;
     this.showContextStatus(`正在编辑证据卡：${this.evidenceSourceLabel(card)}`);
+  }
+
+  private localEvidenceCard(
+    card: EvidenceCard,
+    note: string,
+    tags: string,
+    kind: EvidenceKind,
+    color: number,
+    reviewStatus: ReviewStatus,
+    updatedAt: number
+  ): EvidenceCard {
+    return {
+      id: card.id,
+      documentId: card.documentId,
+      quote: card.quote,
+      pageIndex: card.pageIndex,
+      rectsJson: card.rectsJson,
+      note: note,
+      kind: kind,
+      color: color,
+      tags: tags,
+      reviewStatus: reviewStatus,
+      createdAt: card.createdAt,
+      updatedAt: updatedAt
+    };
+  }
+
+  private replaceLocalEvidenceCard(updatedCard: EvidenceCard): void {
+    this.evidenceCards = this.evidenceCards.map((item: EvidenceCard): EvidenceCard =>
+      item.id === updatedCard.id ? updatedCard : item);
   }
 
   private async saveEvidenceEdit(card: EvidenceCard): Promise<void> {
@@ -1153,18 +1212,44 @@ struct Index {
     }
     const note = this.editingEvidenceNote.trim();
     const tags = normalizeTags(this.editingEvidenceTags);
+    const kind = this.editingEvidenceKind;
+    const color = this.editingEvidenceColor;
+    const reviewStatus = this.editingEvidenceReviewStatus;
+    const appearanceChanged = kind !== card.kind || color !== card.color;
     this.isSavingEditor = true;
     this.statusMessage = '正在保存证据卡修改…';
     try {
-      await this.evidenceRepository.updateCard(
+      const updatedAt = await this.evidenceRepository.updateCard(
         card.id,
         note,
         tags,
-        card.reviewStatus
+        kind,
+        color,
+        reviewStatus
       );
-      this.evidenceCards = await this.evidenceRepository.listAll();
+      const updatedCard = this.localEvidenceCard(card, note, tags, kind, color, reviewStatus, updatedAt);
+      let listReloaded = true;
+      try {
+        this.evidenceCards = await this.evidenceRepository.listAll();
+      } catch (error) {
+        listReloaded = false;
+        this.replaceLocalEvidenceCard(updatedCard);
+      }
       this.closeEditor('EVIDENCE');
-      this.showTransientStatus('证据卡修改已保存');
+      let annotationRefreshed = true;
+      if (appearanceChanged && card.documentId === this.activeDocumentId) {
+        const document = this.activeDocument();
+        if (document !== undefined) {
+          annotationRefreshed = await this.reloadActivePdf(document);
+        }
+      }
+      if (!annotationRefreshed) {
+        this.statusMessage = '证据卡修改已保存，PDF 标注将在重新打开资料后刷新';
+      } else if (!listReloaded) {
+        this.statusMessage = '证据卡修改已保存，本地列表将在下次打开时重新校验';
+      } else {
+        this.showTransientStatus(appearanceChanged ? '证据卡与 PDF 标注已更新' : '证据卡修改已保存');
+      }
     } catch (error) {
       this.statusMessage = '证据卡修改保存失败';
     } finally {
@@ -1173,39 +1258,95 @@ struct Index {
   }
 
   private async toggleEvidenceStatus(card: EvidenceCard): Promise<void> {
+    if (this.updatingEvidenceStatusId.length > 0 || this.isSavingEditor || this.isDeleting) {
+      return;
+    }
     const next: ReviewStatus = card.reviewStatus === 'MASTERED' ? 'TO_REVIEW' : 'MASTERED';
+    this.updatingEvidenceStatusId = card.id;
     try {
-      await this.evidenceRepository.setReviewStatus(card.id, next);
-      this.evidenceCards = await this.evidenceRepository.listAll();
-      this.showTransientStatus(next === 'MASTERED' ? '已标记为掌握' : '已加入待复习');
+      const updatedAt = await this.evidenceRepository.setReviewStatus(card.id, next);
+      const updatedCard = this.localEvidenceCard(
+        card,
+        card.note,
+        card.tags,
+        card.kind,
+        card.color,
+        next,
+        updatedAt
+      );
+      try {
+        this.evidenceCards = await this.evidenceRepository.listAll();
+        this.showTransientStatus(next === 'MASTERED' ? '已标记为掌握' : '已加入待复习');
+      } catch (error) {
+        this.replaceLocalEvidenceCard(updatedCard);
+        this.statusMessage = next === 'MASTERED' ?
+          '已标记为掌握，本地列表将在下次打开时重新校验' :
+          '已加入待复习，本地列表将在下次打开时重新校验';
+      }
     } catch (error) {
       this.statusMessage = '复习状态保存失败';
+    } finally {
+      this.updatingEvidenceStatusId = '';
     }
   }
 
   private async deleteEvidence(card: EvidenceCard): Promise<void> {
     try {
       await this.evidenceRepository.delete(card.id);
-      this.evidenceCards = await this.evidenceRepository.listAll();
-      if (card.documentId === this.activeDocumentId) {
-        const document = this.activeDocument();
-        if (document !== undefined) {
-          await this.reloadActivePdf(document);
-        }
-      }
-      this.showTransientStatus('证据卡与对应阅迹标注已删除');
     } catch (error) {
       this.statusMessage = '证据卡删除失败';
+      return;
+    }
+    let listReloaded = true;
+    try {
+      this.evidenceCards = await this.evidenceRepository.listAll();
+    } catch (error) {
+      listReloaded = false;
+      this.evidenceCards = this.evidenceCards.filter(
+        (item: EvidenceCard): boolean => item.id !== card.id
+      );
+    }
+    let annotationRefreshed = true;
+    if (card.documentId === this.activeDocumentId) {
+      const document = this.activeDocument();
+      if (document !== undefined) {
+        annotationRefreshed = await this.reloadActivePdf(document);
+      }
+    }
+    if (!annotationRefreshed) {
+      this.statusMessage = '证据卡已删除，PDF 标注将在重新打开资料后刷新';
+    } else if (!listReloaded) {
+      this.statusMessage = '证据卡已删除，本地列表将在下次打开时重新校验';
+    } else {
+      this.showTransientStatus('证据卡与对应阅迹标注已删除');
     }
   }
 
-  private async reloadActivePdf(document: DocumentRecord): Promise<void> {
+  private async reloadActivePdf(document: DocumentRecord): Promise<boolean> {
     const pageIndex = Math.max(0, this.currentPage - 1);
-    this.pdfController.releaseDocument();
-    const result = await this.pdfController.loadDocument(document.source, undefined, pageIndex);
-    if (result === pdfService.ParseResult.PARSE_SUCCESS) {
-      this.pdfController.setPageFit(pdfService.PageFit.FIT_WIDTH);
+    const pageFit = this.pdfController.getPageFit();
+    const zoom = this.pdfController.getPageZoom();
+    try {
+      this.pdfController.releaseDocument();
+      const result = await this.pdfController.loadDocument(document.source, undefined, pageIndex);
+      if (result !== pdfService.ParseResult.PARSE_SUCCESS) {
+        this.documentPath = '';
+        return false;
+      }
+      this.documentPath = document.source;
+      this.pdfController.setMaxZoom(4);
+      this.pdfController.setMinZoom(0.5);
+      if (pageFit === pdfService.PageFit.FIT_NONE) {
+        this.pdfController.setPageZoom(Math.max(0.5, Math.min(4, zoom)));
+      } else {
+        this.pdfController.setPageFit(pageFit);
+      }
       this.restoreDocumentAnnotations(document.id);
+      return true;
+    } catch (error) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'Active PDF annotation refresh failed: %{public}s', JSON.stringify(error));
+      this.documentPath = '';
+      return false;
     }
   }
 
@@ -1494,14 +1635,17 @@ struct Index {
     this.finishReviewSession('已结束专注复习');
   }
 
-  private advanceReviewSession(): void {
+  private advanceReviewSession(listReloaded: boolean = true): void {
     if (this.reviewSessionIndex + 1 >= this.reviewSessionIds.length) {
-      this.finishReviewSession('本轮复习完成');
+      this.finishReviewSession(listReloaded ?
+        '本轮复习完成' :
+        '本轮复习完成，状态已保存，列表将在下次打开时校验');
       return;
     }
     this.reviewSessionIndex += 1;
+    const reloadMessage = listReloaded ? '' : ' · 状态已保存，列表将在下次打开时校验';
     this.statusMessage =
-      `专注复习 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length}`;
+      `专注复习 ${this.reviewSessionIndex + 1}/${this.reviewSessionIds.length}${reloadMessage}`;
   }
 
   private skipReviewSessionCard(): void {
@@ -1523,13 +1667,28 @@ struct Index {
     this.isReviewSessionUpdating = true;
     this.statusMessage = status === 'MASTERED' ? '正在标记掌握…' : '正在保留待复习状态…';
     try {
-      await this.evidenceRepository.setReviewStatus(card.id, status);
-      this.evidenceCards = await this.evidenceRepository.listAll();
+      const updatedAt = await this.evidenceRepository.setReviewStatus(card.id, status);
+      const updatedCard = this.localEvidenceCard(
+        card,
+        card.note,
+        card.tags,
+        card.kind,
+        card.color,
+        status,
+        updatedAt
+      );
+      let listReloaded = true;
+      try {
+        this.evidenceCards = await this.evidenceRepository.listAll();
+      } catch (error) {
+        listReloaded = false;
+        this.replaceLocalEvidenceCard(updatedCard);
+      }
       this.reviewSessionReviewedCount += 1;
       if (status === 'MASTERED') {
         this.reviewSessionMasteredCount += 1;
       }
-      this.advanceReviewSession();
+      this.advanceReviewSession(listReloaded);
     } catch (error) {
       this.statusMessage = '复习状态保存失败，当前卡片仍保留';
     } finally {
@@ -2368,14 +2527,16 @@ struct Index {
   }
 
   @Builder
-  private DangerButton(label: () => string, action: () => void): void {
+  private DangerButton(label: () => string, action: () => void,
+    enabled: () => boolean = (): boolean => true): void {
     Button(label())
       .height(34)
       .fontSize(12)
-      .fontColor(this.coralColor())
+      .fontColor(enabled() ? this.coralColor() : this.mutedText())
       .backgroundColor(Color.Transparent)
       .borderRadius(6)
       .padding({ left: 9, right: 9 })
+      .enabled(enabled())
       .onClick(action);
   }
 
@@ -3340,6 +3501,102 @@ struct Index {
         .padding({ left: 9 })
         .border({ width: { left: 3 }, color: card.color });
       if (this.editingEvidenceId === card.id) {
+        if (card.kind !== 'QUOTE' && card.rectsJson.length > 2) {
+          Row({ space: 7 }) {
+            Button('高亮')
+              .height(32)
+              .fontSize(12)
+              .fontColor(this.editingEvidenceKind === 'HIGHLIGHT' ?
+                this.highlightPreviewText() : this.secondaryText())
+              .backgroundColor(this.editingEvidenceKind === 'HIGHLIGHT' ?
+                this.highlightActiveBackground() : this.raisedBackground())
+              .border({
+                width: 1,
+                color: this.editingEvidenceKind === 'HIGHLIGHT' ?
+                  this.highlightActiveBorder() : this.dividerColor()
+              })
+              .borderRadius(6)
+              .layoutWeight(1)
+              .enabled(!this.isSavingEditor)
+              .onClick((): void => {
+                this.editingEvidenceKind = 'HIGHLIGHT';
+              });
+            Button('下划线')
+              .height(32)
+              .fontSize(12)
+              .fontColor(this.editingEvidenceKind === 'UNDERLINE' ? this.accentColor() : this.secondaryText())
+              .backgroundColor(this.editingEvidenceKind === 'UNDERLINE' ?
+                this.accentSoft() : this.raisedBackground())
+              .border({
+                width: 1,
+                color: this.editingEvidenceKind === 'UNDERLINE' ? this.accentColor() : this.dividerColor()
+              })
+              .borderRadius(6)
+              .layoutWeight(1)
+              .enabled(!this.isSavingEditor)
+              .onClick((): void => {
+                this.editingEvidenceKind = 'UNDERLINE';
+              });
+          }
+          .width('100%');
+          Row({ space: 8 }) {
+            ForEach([0xFFFFD95A, 0xFFA8E6CF, 0xFFFFB3A7, 0xFFBFD7FF], (color: number): void => {
+              Button()
+                .width(26)
+                .height(26)
+                .backgroundColor(color)
+                .border({
+                  width: this.editingEvidenceColor === color ? 2 : 1,
+                  color: this.editingEvidenceColor === color ? this.primaryText() : this.dividerColor()
+                })
+                .borderRadius(6)
+                .enabled(!this.isSavingEditor)
+                .onClick((): void => {
+                  this.editingEvidenceColor = color;
+                });
+            }, (color: number): string => `${color}`);
+          }
+          .width('100%');
+        }
+        Row({ space: 7 }) {
+          Button('待复习')
+            .height(32)
+            .fontSize(12)
+            .fontColor(this.editingEvidenceReviewStatus === 'TO_REVIEW' ?
+              this.coralColor() : this.secondaryText())
+            .backgroundColor(this.editingEvidenceReviewStatus === 'TO_REVIEW' ?
+              this.coralSoft() : this.raisedBackground())
+            .border({
+              width: 1,
+              color: this.editingEvidenceReviewStatus === 'TO_REVIEW' ?
+                this.coralColor() : this.dividerColor()
+            })
+            .borderRadius(6)
+            .layoutWeight(1)
+            .enabled(!this.isSavingEditor)
+            .onClick((): void => {
+              this.editingEvidenceReviewStatus = 'TO_REVIEW';
+            });
+          Button('已掌握')
+            .height(32)
+            .fontSize(12)
+            .fontColor(this.editingEvidenceReviewStatus === 'MASTERED' ?
+              this.accentColor() : this.secondaryText())
+            .backgroundColor(this.editingEvidenceReviewStatus === 'MASTERED' ?
+              this.accentSoft() : this.raisedBackground())
+            .border({
+              width: 1,
+              color: this.editingEvidenceReviewStatus === 'MASTERED' ?
+                this.accentColor() : this.dividerColor()
+            })
+            .borderRadius(6)
+            .layoutWeight(1)
+            .enabled(!this.isSavingEditor)
+            .onClick((): void => {
+              this.editingEvidenceReviewStatus = 'MASTERED';
+            });
+        }
+        .width('100%');
         TextArea({ placeholder: '个人笔记', text: this.editingEvidenceNote })
           .width('100%')
           .height(72)
@@ -3368,11 +3625,13 @@ struct Index {
           .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
         Row({ space: 7 }) {
           this.AccentButton(
-            (): string => this.isSavingEditor ? '正在保存…' : '保存',
+            (): string => this.isSavingEditor ?
+              '正在保存…' :
+              (this.hasEvidenceEditorDraft() ? '保存' : '已保存'),
             (): void => {
               this.saveEvidenceEdit(card);
             },
-            (): boolean => !this.isSavingEditor
+            (): boolean => !this.isSavingEditor && this.hasEvidenceEditorDraft()
           );
           this.ToolButton((): string => '取消', (): void => {
             this.requestCloseEditor('EVIDENCE');
@@ -3403,10 +3662,13 @@ struct Index {
                 this.returnToEvidence(card);
               });
               this.ToolButton(
-                (): string => card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握',
+                (): string => this.updatingEvidenceStatusId === card.id ?
+                  '正在更新…' :
+                  (card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握'),
                 (): void => {
                   this.toggleEvidenceStatus(card);
-                }
+                },
+                (): boolean => this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting
               );
             }
             .width('100%');
@@ -3414,10 +3676,12 @@ struct Index {
               Blank();
               this.ToolButton((): string => '编辑', (): void => {
                 this.startEditEvidence(card);
-              });
+              }, (): boolean =>
+                this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting);
               this.DangerButton((): string => '删除', (): void => {
                 this.requestDeleteEvidence(card);
-              });
+              }, (): boolean =>
+                this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting);
             }
             .width('100%');
           }
@@ -3428,18 +3692,23 @@ struct Index {
               this.returnToEvidence(card);
             });
             this.ToolButton(
-              (): string => card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握',
+              (): string => this.updatingEvidenceStatusId === card.id ?
+                '正在更新…' :
+                (card.reviewStatus === 'MASTERED' ? '改为待复习' : '标记掌握'),
               (): void => {
                 this.toggleEvidenceStatus(card);
-              }
+              },
+              (): boolean => this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting
             );
             Blank();
             this.ToolButton((): string => '编辑', (): void => {
               this.startEditEvidence(card);
-            });
+            }, (): boolean =>
+              this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting);
             this.DangerButton((): string => '删除', (): void => {
               this.requestDeleteEvidence(card);
-            });
+            }, (): boolean =>
+              this.updatingEvidenceStatusId.length === 0 && !this.isSavingEditor && !this.isDeleting);
           }
           .width('100%');
         }
