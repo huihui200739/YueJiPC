@@ -27,7 +27,7 @@
 
 - [x] Debug 构建通过
 - [x] Release 无签名构建通过
-- [x] 26 个 API 24 数据完整性单元测试通过
+- [x] 27 个 API 24 数据完整性单元测试通过
 - [x] 生成配置确认为 Release 模式且 `debug:false`
 - [ ] AppGallery Connect 应用已创建
 - [ ] 发布证书和 Profile 配置完成
@@ -38,11 +38,11 @@
 当前无签名产物：
 
 - HAP 路径：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- HAP 大小：510924 bytes
-- HAP SHA-256：`840a79514b76d537e20216d97876ec12f3b89b58834b16f84b8daedc71a4df3c`
+- HAP 大小：521196 bytes
+- HAP SHA-256：`da98327186d66b00c7ede6cee6a0fa064e76d007077c6e36466458f96fc4191e`
 - APP 路径：`build/outputs/default/YueJiPC-default-unsigned.app`
-- APP 大小：225426 bytes
-- APP SHA-256：`c383f535d653fd90a57b7cae0cddea97a00ff1fcfc18d957e66691af70aac3c`
+- APP 大小：229702 bytes
+- APP SHA-256：`a1841e6cb6e5f823d526e6cfc8b3ab63eb8a1b7d10d58335d972a264e0a0de95`
 - 构建时间：2026 年 8 月 18 日（以本轮构建产物文件时间为准）
 
 完成发布签名后，必须重新记录已签名产物的文件名、大小和 SHA-256；当前哈希不能作为送审包哈希。
@@ -96,7 +96,7 @@
 - [x] 本地源码区检查无证书、私钥、Profile、凭据和测试 PDF
 - [x] 建立公开代码仓库并复查待发布文件
 
-本轮代码改动（数据库级联、输入边界、网址校验、证据来源状态、导出、拖放、主题集合、批量操作、备份恢复、数据健康、临时文件清理和事务失败状态）已通过 Debug/Release 无签名构建及 26 个数据完整性单元测试，相关人工回归见 [docs/TEST_PLAN.md](TEST_PLAN.md) 的“2026 年 8 月 18 日代码变更回归范围”，当前均不提前标记为通过。
+本轮代码改动（数据库级联、输入边界、网址校验、证据来源状态、导出、拖放、主题集合、批量操作、备份恢复、数据健康、临时文件清理和事务失败状态）已通过 Debug/Release 无签名构建及 27 个数据完整性单元测试，相关人工回归见 [docs/TEST_PLAN.md](TEST_PLAN.md) 的“2026 年 8 月 18 日代码变更回归范围”，当前均不提前标记为通过。
 
 ## 时间节点
 

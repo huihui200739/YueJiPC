@@ -89,13 +89,13 @@ Release 构建：
 截至 2026 年 8 月 18 日：
 
 - P0 功能代码已实现
-- API 24 Debug 和 Release 无签名构建均已通过；26 个数据完整性单元测试均已通过，覆盖备份路径、关系健康检查、诊断脱敏、临时文件识别和事务失败状态
+- API 24 Debug 和 Release 无签名构建均已通过；27 个数据完整性单元测试均已通过，覆盖备份路径、关系健康检查、诊断脱敏、临时文件识别、事务失败状态和批量复习调度
 - 已在 `MateBook Pro` 2in1 模拟器（HarmonyOS 6.1.0.125）覆盖安装并启动 Debug 包，旧资料、页码、证据卡和设置仍可恢复
 - 已验证普通、200 页、加密和损坏 PDF，以及阅读、证据卡、来源回跳、复习、Markdown 导出、重启恢复和窄窗口布局
 - 已检查 PDF 阅读工具栏的系统符号按钮和固定尺寸布局，启动后显示正常
 - 27 个 JSON/JSON5 配置均可解析；源码区未发现证书、私钥、Profile、凭据或测试 PDF
-- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，510924 bytes，SHA-256 `840a79514b76d537e20216d97876ec12f3b89b58834b16f84b8daedc71a4df3c`
-- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，225426 bytes，SHA-256 `c383f535d653fd90a57b7cae0cddea97a00ff1fcfc18d957e66691af70aac3c`
+- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，521196 bytes，SHA-256 `da98327186d66b00c7ede6cee6a0fa064e76d007077c6e36466458f96fc4191e`
+- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，229702 bytes，SHA-256 `a1841e6cb6e5f823d526e6cfc8b3ab63eb8a1b7d10d58335d972a264e0a0de95`
 - 产物生成时间：2026 年 8 月 18 日（以本轮构建产物文件时间为准）
 - 本轮代码新增的数据库级联、输入长度、选区 JSON、网址、导出、拖放、备份恢复、数据健康和存储临时文件清理边界，仍需按 [docs/TEST_PLAN.md](docs/TEST_PLAN.md) 完成人工回归
 - 发布签名、AppGallery Connect 配置、真机验证、3 名学生测试、30 分钟稳定性测试和商店送审仍需完成

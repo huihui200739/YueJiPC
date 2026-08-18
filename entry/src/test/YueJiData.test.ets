@@ -351,6 +351,28 @@ export default function yueJiDataTest(): void {
       expect(schedule.nextReviewAt).assertEqual(reviewedAt + 24 * 60 * 60 * 1000);
     });
 
+    it('keeps batch review actions deterministic for every selected card', 0, (): void => {
+      const scheduler = new ReviewScheduler();
+      const first = createEvidence('document-1');
+      first.id = 'evidence-1';
+      const second = createEvidence('document-1');
+      second.id = 'evidence-2';
+      second.reviewStatus = 'MASTERED';
+      second.lastReviewedAt = 1000;
+      second.nextReviewAt = 2000;
+      second.reviewCount = 2;
+
+      const updatedAt = 5000;
+      const firstSchedule = scheduler.valuesForReviewAction(first, 'MASTERED', updatedAt);
+      const secondSchedule = scheduler.valuesForReviewAction(second, 'MASTERED', updatedAt);
+
+      expect(firstSchedule.reviewCount).assertEqual(1);
+      expect(firstSchedule.lastReviewedAt).assertEqual(updatedAt);
+      expect(secondSchedule.reviewCount).assertEqual(3);
+      expect(secondSchedule.lastReviewedAt).assertEqual(updatedAt);
+      expect(secondSchedule.nextReviewAt).assertEqual(updatedAt + 7 * 24 * 60 * 60 * 1000);
+    });
+
     it('accepts valid stored PDF selections and rejects empty or broken selections', 0, (): void => {
       expect(isValidStoredSelectionJson(
         '[{"pageIndex":0,"isRotated":0,"rectArray":' +

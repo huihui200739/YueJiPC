@@ -2885,27 +2885,18 @@ struct Index {
     }
     this.isBatchUpdating = true;
     try {
-      const count = await this.evidenceRepository.batchSetReviewStatus(
+      const updatedCards = await this.evidenceRepository.batchSetReviewStatus(
         cards.map((card: EvidenceCard): string => card.id),
         status
       );
+      const count = updatedCards.length;
       let listReloaded = true;
       try {
         await this.reloadData();
       } catch (error) {
         listReloaded = false;
-        const updatedAt = Date.now();
-        cards.forEach((card: EvidenceCard): void => {
-          this.replaceLocalEvidenceCard(this.localEvidenceCard(
-            card,
-            card.note,
-            card.tags,
-            card.kind,
-            card.color,
-            status,
-            updatedAt,
-            true
-          ));
+        updatedCards.forEach((updatedCard: EvidenceCard): void => {
+          this.replaceLocalEvidenceCard(updatedCard);
         });
       }
       this.selectedEvidenceIds = [];
@@ -2937,38 +2928,18 @@ struct Index {
     }
     this.isBatchUpdating = true;
     try {
-      const count = await this.evidenceRepository.batchAppendTags(
+      const updatedCards = await this.evidenceRepository.batchAppendTags(
         cards.map((card: EvidenceCard): string => card.id),
         tags
       );
+      const count = updatedCards.length;
       let listReloaded = true;
       try {
         await this.reloadData();
       } catch (error) {
         listReloaded = false;
-        const normalizedTags = normalizeTags(tags);
-        const updatedAt = Date.now();
-        cards.forEach((card: EvidenceCard): void => {
-          const mergedTags = normalizeTags(
-            card.tags.length > 0 ? `${card.tags}, ${normalizedTags}` : normalizedTags
-          );
-          this.replaceLocalEvidenceCard({
-            id: card.id,
-            documentId: card.documentId,
-            quote: card.quote,
-            pageIndex: card.pageIndex,
-            rectsJson: card.rectsJson,
-            note: card.note,
-            kind: card.kind,
-            color: card.color,
-            tags: mergedTags,
-            reviewStatus: card.reviewStatus,
-            lastReviewedAt: card.lastReviewedAt,
-            nextReviewAt: card.nextReviewAt,
-            reviewCount: card.reviewCount,
-            createdAt: card.createdAt,
-            updatedAt: updatedAt
-          });
+        updatedCards.forEach((updatedCard: EvidenceCard): void => {
+          this.replaceLocalEvidenceCard(updatedCard);
         });
       }
       this.batchTags = '';

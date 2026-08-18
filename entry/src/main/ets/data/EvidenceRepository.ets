@@ -146,20 +146,21 @@ export class EvidenceRepository {
     return updatedAt;
   }
 
-  async batchSetReviewStatus(ids: string[], reviewStatus: ReviewStatus): Promise<number> {
+  async batchSetReviewStatus(ids: string[], reviewStatus: ReviewStatus): Promise<EvidenceCard[]> {
     const targetIds = uniqueIds(ids);
     if (targetIds.length === 0) {
-      return 0;
+      return [];
     }
     const cards = await this.listAll();
     const existingIds = targetIds.filter((id: string): boolean =>
       cards.some((card: EvidenceCard): boolean => card.id === id));
     if (existingIds.length === 0) {
-      return 0;
+      return [];
     }
     const updatedAt = Date.now();
     const store = this.database.getStore();
     const transactionId = await store.beginTrans();
+    const updatedCards: EvidenceCard[] = [];
     try {
       for (const id of existingIds) {
         const card = cards.find((item: EvidenceCard): boolean => item.id === id);
@@ -173,9 +174,26 @@ export class EvidenceRepository {
           transactionId,
           [reviewStatus, review.lastReviewedAt, review.nextReviewAt, review.reviewCount, updatedAt, id]
         );
+        updatedCards.push({
+          id: card.id,
+          documentId: card.documentId,
+          quote: card.quote,
+          pageIndex: card.pageIndex,
+          rectsJson: card.rectsJson,
+          note: card.note,
+          kind: card.kind,
+          color: card.color,
+          tags: card.tags,
+          reviewStatus: reviewStatus,
+          lastReviewedAt: review.lastReviewedAt,
+          nextReviewAt: review.nextReviewAt,
+          reviewCount: review.reviewCount,
+          createdAt: card.createdAt,
+          updatedAt: updatedAt
+        });
       }
       await store.commit(transactionId);
-      return existingIds.length;
+      return updatedCards;
     } catch (error) {
       try {
         await store.rollback(transactionId);
@@ -186,20 +204,21 @@ export class EvidenceRepository {
     }
   }
 
-  async batchAppendTags(ids: string[], tags: string): Promise<number> {
+  async batchAppendTags(ids: string[], tags: string): Promise<EvidenceCard[]> {
     const targetIds = uniqueIds(ids);
     const normalizedTags = normalizeTags(tags);
     if (targetIds.length === 0 || normalizedTags.length === 0) {
-      return 0;
+      return [];
     }
     const cards = await this.listAll();
     const targetCards = cards.filter((card: EvidenceCard): boolean => targetIds.includes(card.id));
     if (targetCards.length === 0) {
-      return 0;
+      return [];
     }
     const updatedAt = Date.now();
     const store = this.database.getStore();
     const transactionId = await store.beginTrans();
+    const updatedCards: EvidenceCard[] = [];
     try {
       for (const card of targetCards) {
         const mergedTags = normalizeTags(
@@ -210,9 +229,26 @@ export class EvidenceRepository {
           transactionId,
           [mergedTags, updatedAt, card.id]
         );
+        updatedCards.push({
+          id: card.id,
+          documentId: card.documentId,
+          quote: card.quote,
+          pageIndex: card.pageIndex,
+          rectsJson: card.rectsJson,
+          note: card.note,
+          kind: card.kind,
+          color: card.color,
+          tags: mergedTags,
+          reviewStatus: card.reviewStatus,
+          lastReviewedAt: card.lastReviewedAt,
+          nextReviewAt: card.nextReviewAt,
+          reviewCount: card.reviewCount,
+          createdAt: card.createdAt,
+          updatedAt: updatedAt
+        });
       }
       await store.commit(transactionId);
-      return targetCards.length;
+      return updatedCards;
     } catch (error) {
       try {
         await store.rollback(transactionId);
