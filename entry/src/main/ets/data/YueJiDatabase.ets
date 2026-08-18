@@ -35,8 +35,23 @@ const EVIDENCE_TABLE_SQL = `
 `;
 const EVIDENCE_DOCUMENT_INDEX_SQL =
   'CREATE INDEX IF NOT EXISTS evidence_document_index ON evidence_cards(document_id)';
+const EVIDENCE_STATUS_INDEX_SQL =
+  'CREATE INDEX IF NOT EXISTS evidence_status_index ON evidence_cards(review_status)';
+const EVIDENCE_UPDATED_INDEX_SQL =
+  'CREATE INDEX IF NOT EXISTS evidence_updated_index ON evidence_cards(updated_at DESC)';
 const DOCUMENT_RECENT_INDEX_SQL =
   'CREATE INDEX IF NOT EXISTS document_recent_index ON documents(last_read_at DESC)';
+const DOCUMENT_FAVORITE_INDEX_SQL =
+  'CREATE INDEX IF NOT EXISTS document_favorite_index ON documents(favorite)';
+const DOCUMENT_DELETE_TRIGGER_SQL = `
+  CREATE TRIGGER IF NOT EXISTS document_delete_evidence
+  AFTER DELETE ON documents
+  BEGIN
+    DELETE FROM evidence_cards WHERE document_id = OLD.id;
+  END
+`;
+const DELETE_ORPHAN_EVIDENCE_SQL =
+  'DELETE FROM evidence_cards WHERE document_id NOT IN (SELECT id FROM documents)';
 
 export class YueJiDatabase {
   private store: relationalStore.RdbStore | undefined;
@@ -53,7 +68,12 @@ export class YueJiDatabase {
     await this.store.executeSql(DOCUMENT_TABLE_SQL);
     await this.store.executeSql(EVIDENCE_TABLE_SQL);
     await this.store.executeSql(EVIDENCE_DOCUMENT_INDEX_SQL);
+    await this.store.executeSql(EVIDENCE_STATUS_INDEX_SQL);
+    await this.store.executeSql(EVIDENCE_UPDATED_INDEX_SQL);
     await this.store.executeSql(DOCUMENT_RECENT_INDEX_SQL);
+    await this.store.executeSql(DOCUMENT_FAVORITE_INDEX_SQL);
+    await this.store.executeSql(DOCUMENT_DELETE_TRIGGER_SQL);
+    await this.store.executeSql(DELETE_ORPHAN_EVIDENCE_SQL);
   }
 
   getStore(): relationalStore.RdbStore {

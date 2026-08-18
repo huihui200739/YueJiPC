@@ -79,7 +79,7 @@ Release 构建：
 
 ## 发布状态
 
-截至 2026 年 8 月 14 日：
+截至 2026 年 8 月 18 日：
 
 - P0 功能代码已实现
 - 最终源码的 API 24 Debug 和 Release 无签名构建均已通过
@@ -87,12 +87,23 @@ Release 构建：
 - 已验证普通、200 页、加密和损坏 PDF，以及阅读、证据卡、来源回跳、复习、Markdown 导出、重启恢复和窄窗口布局
 - 已检查 PDF 阅读工具栏的系统符号按钮和固定尺寸布局，启动后显示正常
 - 27 个 JSON/JSON5 配置均可解析；源码区未发现证书、私钥、Profile、凭据或测试 PDF
-- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，212108 bytes，SHA-256 `7ae4b1236bcd51211a4fae0aa1bee075fc809d3153c96bd58aefa27a52ab89db`
-- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，101622 bytes，SHA-256 `3c25a941087ed07dad5c5589611e0b4954aa3125d52a91d4170c1cc1af951ca8`
+- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，337016 bytes，SHA-256 `0d2e5d26c812eea737041471b06819dfd47d808b28675e82c3742a2f0323709e`
+- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，153097 bytes，SHA-256 `05212983444f1c088ed8d5825d6159c08dbf7308f3082d8b3bc4b9df158ba8a7`
+- 产物生成时间：2026 年 8 月 18 日 11:34（Asia/Shanghai）
+- 本轮代码新增的数据库级联、输入长度、选区 JSON、网址、导出和拖放边界，仍需按 [docs/TEST_PLAN.md](docs/TEST_PLAN.md) 完成人工回归
 - 发布签名、AppGallery Connect 配置、真机验证、3 名学生测试、30 分钟稳定性测试和商店送审仍需完成
 - 小艺输入法隐私协议未由本项目代为接受；文字输入和键盘快捷键仍需开发者本人完成最终人工回归
 
 发布进度使用 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 跟踪，不把未执行的人工测试标记为通过。
+
+## 后续产品路线
+
+在完成签名和发布前人工回归后，建议按以下顺序继续完善：
+
+1. JSON 备份与恢复，先解决用户最担心的数据可迁移和误删恢复
+2. 跨资料主题集合与证据对比，让同一主题下的论文、教材和网页摘录可以并排整理
+3. 批量标签与批量复习状态，降低资料量上来后的操作成本
+4. 阅读统计和复习进度，补足长期使用反馈，但不引入账号和远程分析
 
 ## 许可证
 

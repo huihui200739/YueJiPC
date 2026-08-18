@@ -30,12 +30,12 @@
 当前无签名产物：
 
 - HAP 路径：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- HAP 大小：212108 bytes
-- HAP SHA-256：`7ae4b1236bcd51211a4fae0aa1bee075fc809d3153c96bd58aefa27a52ab89db`
+- HAP 大小：337016 bytes
+- HAP SHA-256：`0d2e5d26c812eea737041471b06819dfd47d808b28675e82c3742a2f0323709e`
 - APP 路径：`build/outputs/default/YueJiPC-default-unsigned.app`
-- APP 大小：101622 bytes
-- APP SHA-256：`3c25a941087ed07dad5c5589611e0b4954aa3125d52a91d4170c1cc1af951ca8`
-- 构建时间：2026 年 8 月 14 日 16:57:01（Asia/Shanghai）
+- APP 大小：153097 bytes
+- APP SHA-256：`05212983444f1c088ed8d5825d6159c08dbf7308f3082d8b3bc4b9df158ba8a7`
+- 构建时间：2026 年 8 月 18 日 11:34（Asia/Shanghai）
 
 完成发布签名后，必须重新记录已签名产物的文件名、大小和 SHA-256；当前哈希不能作为送审包哈希。
 
@@ -83,6 +83,8 @@
 - [ ] 录制两分钟演示视频
 - [x] 本地源码区检查无证书、私钥、Profile、凭据和测试 PDF
 - [ ] 建立公开代码仓库并复查待发布文件
+
+本轮代码改动（数据库级联、输入边界、网址校验、证据来源状态、导出和拖放）已通过 Debug/Release 无签名构建，相关人工回归见 [docs/TEST_PLAN.md](TEST_PLAN.md) 的“2026 年 8 月 18 日代码变更回归范围”，当前均不提前标记为通过。
 
 ## 时间节点
 

@@ -71,6 +71,14 @@ export class ImportService {
     };
   }
 
+  isPdfUri(uri: string): boolean {
+    try {
+      return decodeURIComponent(uri.split('?')[0].split('#')[0]).toLowerCase().endsWith('.pdf');
+    } catch (error) {
+      return uri.split('?')[0].split('#')[0].toLowerCase().endsWith('.pdf');
+    }
+  }
+
   async copyPdfToPath(uri: string, targetPath: string): Promise<void> {
     try {
       const lastSlash = targetPath.lastIndexOf('/');

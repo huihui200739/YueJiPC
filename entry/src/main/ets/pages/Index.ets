@@ -15,6 +15,13 @@ import {
   EvidenceCard,
   EvidenceKind,
   MainView,
+  MAX_EXCERPT_LENGTH,
+  MAX_NOTE_LENGTH,
+  MAX_QUOTE_LENGTH,
+  MAX_SEARCH_LENGTH,
+  MAX_TAGS_LENGTH,
+  MAX_TITLE_LENGTH,
+  MAX_URL_LENGTH,
   normalizeTags,
   ReviewStatus,
   StoredPdfRect,
@@ -233,9 +240,21 @@ struct Index {
     }, 4200);
   }
 
+  private validateLength(value: string, label: string, maximum: number): boolean {
+    if (value.length <= maximum) {
+      return true;
+    }
+    this.statusMessage = `${label}最多支持 ${maximum} 个字符，请精简后再保存`;
+    return false;
+  }
+
   private handleTextSelection(selection: pdfViewManager.TextSelectedParam): void {
     const selectedText = selection.text.trim();
     if (this.isSavingEvidence || selectedText.length === 0 || selection.pdfRect.length === 0) {
+      return;
+    }
+    if (selectedText.length > MAX_QUOTE_LENGTH) {
+      this.statusMessage = `选区超过 ${MAX_QUOTE_LENGTH} 个字符，请缩小选区后再创建证据卡`;
       return;
     }
     const sourceChanged = this.selectedText.trim().length > 0 && this.selectedText.trim() !== selectedText;
@@ -1029,7 +1048,23 @@ struct Index {
       return [];
     }
     try {
-      return JSON.parse(value) as StoredSelection[];
+      const parsed = JSON.parse(value) as StoredSelection[];
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed.filter((stored: StoredSelection): boolean => {
+        if (!Number.isInteger(stored.pageIndex) || stored.pageIndex < 0 ||
+          !Array.isArray(stored.rectArray) || stored.rectArray.length === 0) {
+          return false;
+        }
+        return stored.rectArray.every((rect: StoredPdfRect): boolean =>
+          Number.isFinite(rect.left) &&
+          Number.isFinite(rect.top) &&
+          Number.isFinite(rect.right) &&
+          Number.isFinite(rect.bottom) &&
+          rect.right >= rect.left &&
+          rect.bottom >= rect.top);
+      });
     } catch (error) {
       return [];
     }
@@ -1095,6 +1130,11 @@ struct Index {
     const selectedText = this.selectedText.trim();
     const selectedRects = this.selectedRects;
     const note = this.evidenceNote.trim();
+    if (!this.validateLength(selectedText, '证据原文', MAX_QUOTE_LENGTH) ||
+      !this.validateLength(note, '个人笔记', MAX_NOTE_LENGTH) ||
+      !this.validateLength(this.evidenceTags, '标签', MAX_TAGS_LENGTH)) {
+      return;
+    }
     const tags = normalizeTags(this.evidenceTags);
     const now = Date.now();
     const card: EvidenceCard = {
@@ -1211,6 +1251,10 @@ struct Index {
       return;
     }
     const note = this.editingEvidenceNote.trim();
+    if (!this.validateLength(note, '个人笔记', MAX_NOTE_LENGTH) ||
+      !this.validateLength(this.editingEvidenceTags, '标签', MAX_TAGS_LENGTH)) {
+      return;
+    }
     const tags = normalizeTags(this.editingEvidenceTags);
     const kind = this.editingEvidenceKind;
     const color = this.editingEvidenceColor;
@@ -1375,6 +1419,10 @@ struct Index {
     if (this.activeDocumentId !== document.id || this.documentPath.length === 0) {
       return;
     }
+    if (card.pageIndex < 0 || card.pageIndex >= this.pageCount) {
+      this.statusMessage = `无法定位 ${document.title} 的第 ${card.pageIndex + 1} 页`;
+      return;
+    }
     this.pdfController.goToPage(card.pageIndex);
     const pageRects = this.pageRectsFromCard(card);
     if (pageRects.length > 0) {
@@ -1382,7 +1430,9 @@ struct Index {
     }
     this.mainView = 'READER';
     this.rightSidebarOpen = true;
-    this.statusMessage = `已返回 ${document.title} 第 ${card.pageIndex + 1} 页`;
+    this.statusMessage = pageRects.length > 0 ?
+      `已返回 ${document.title} 第 ${card.pageIndex + 1} 页，并突出原文选区` :
+      `已返回 ${document.title} 第 ${card.pageIndex + 1} 页，但原文选区无法恢复`;
   }
 
   private changeZoom(delta: number): void {
@@ -1508,10 +1558,57 @@ struct Index {
   private evidenceSourceLabel(card: EvidenceCard): string {
     const document = this.documentById(card.documentId);
     if (document === undefined) {
-      return '已删除资料';
+      return '来源已删除';
+    }
+    if (document.kind === 'PDF' && this.isPdfMissing(document)) {
+      return `来源暂不可用 · ${document.title} · 第 ${card.pageIndex + 1} 页`;
     }
     return document.kind === 'WEB' ? `${document.title} · 网页摘录` :
       `${document.title} · 第 ${card.pageIndex + 1} 页`;
+  }
+
+  private evidenceLocationStatus(card: EvidenceCard): string {
+    const document = this.documentById(card.documentId);
+    if (document === undefined) {
+      return '原始资料已删除，证据内容仍保留';
+    }
+    if (document.kind === 'PDF' && this.isPdfMissing(document)) {
+      return '本地 PDF 副本丢失，重新导入后可恢复来源';
+    }
+    if (document.kind === 'WEB') {
+      return '点击来源将在系统浏览器中打开';
+    }
+    if (this.deserializeSelection(card.rectsJson).length === 0) {
+      return '已保存页码，但原文选区不可恢复';
+    }
+    return '可返回原文并突出选区';
+  }
+
+  private evidenceLocationStatusColor(card: EvidenceCard): string {
+    const document = this.documentById(card.documentId);
+    if (document === undefined || (document.kind === 'PDF' && this.isPdfMissing(document))) {
+      return this.coralColor();
+    }
+    if (document.kind === 'WEB') {
+      return this.accentColor();
+    }
+    return this.mutedText();
+  }
+
+  private webUrlStatus(): string {
+    const value = this.webUrl.trim();
+    if (value.length === 0) {
+      return '保存网址后，可从阅迹调用系统浏览器返回来源。';
+    }
+    return this.linkService.isValidUrl(value) ?
+      '网址格式可用，保存后会统一为 http:// 或 https:// 来源。' :
+      '请输入有效网址，例如 https://example.com/article';
+  }
+
+  private webUrlStatusColor(): string {
+    const value = this.webUrl.trim();
+    return value.length === 0 ? this.mutedText() :
+      this.linkService.isValidUrl(value) ? this.accentColor() : this.coralColor();
   }
 
   private filteredDocuments(): DocumentRecord[] {
@@ -1801,6 +1898,25 @@ struct Index {
     return values.sort();
   }
 
+  private tagSuggestions(value: string): string[] {
+    const parts = value.split(',');
+    const current = parts.length > 0 ? parts[parts.length - 1].trim().toLowerCase() : '';
+    const used = tagList(value).map((tag: string): string => tag.toLowerCase());
+    return this.allTags()
+      .filter((tag: string): boolean =>
+        !used.includes(tag.toLowerCase()) && (current.length === 0 || tag.toLowerCase().includes(current)))
+      .slice(0, 6);
+  }
+
+  private completeTagValue(value: string, tag: string): string {
+    const parts = value.split(',');
+    if (parts.length === 0) {
+      return tag;
+    }
+    parts[parts.length - 1] = tag;
+    return normalizeTags(parts.join(','));
+  }
+
   private async toggleFavorite(document: DocumentRecord): Promise<void> {
     try {
       await this.libraryRepository.setFavorite(document.id, !document.favorite);
@@ -1812,6 +1928,7 @@ struct Index {
   }
 
   private async deleteDocument(document: DocumentRecord): Promise<void> {
+    let recordDeleted = false;
     try {
       if (document.id === this.activeDocumentId && this.documentPath.length > 0) {
         await this.flushReadPositionBeforeDocumentChange();
@@ -1820,8 +1937,8 @@ struct Index {
         this.activeDocumentId = '';
         this.mainView = 'LIBRARY';
       }
-      await this.evidenceRepository.deleteByDocument(document.id);
       await this.libraryRepository.delete(document.id);
+      recordDeleted = true;
       if (document.kind === 'PDF' && this.importService.fileExists(document.source)) {
         await fs.unlink(document.source);
         const lastSlash = document.source.lastIndexOf('/');
@@ -1832,8 +1949,10 @@ struct Index {
       await this.reloadData();
       this.showTransientStatus(`已从本地资料库删除 ${document.title}`);
     } catch (error) {
-      this.statusMessage = '资料已从列表移除，但部分本地文件可能需要稍后清理';
       await this.reloadData();
+      this.statusMessage = recordDeleted ?
+        '资料和关联证据已删除，但部分本地文件可能需要稍后清理' :
+        '资料删除失败，现有资料和证据卡未被修改';
     }
   }
 
@@ -1981,6 +2100,10 @@ struct Index {
       this.statusMessage = '资料标题不能为空';
       return;
     }
+    if (!this.validateLength(title, '资料标题', MAX_TITLE_LENGTH) ||
+      !this.validateLength(this.pdfTags, '标签', MAX_TAGS_LENGTH)) {
+      return;
+    }
     const tags = normalizeTags(this.pdfTags);
     this.isSavingEditor = true;
     this.statusMessage = '正在保存 PDF 资料信息…';
@@ -2006,6 +2129,13 @@ struct Index {
     }
     if (!this.linkService.isValidUrl(this.webUrl)) {
       this.statusMessage = '网址无效，请输入完整域名，例如 https://example.com';
+      return;
+    }
+    if (!this.validateLength(this.webTitle.trim(), '网页标题', MAX_TITLE_LENGTH) ||
+      !this.validateLength(this.webUrl.trim(), '网址', MAX_URL_LENGTH) ||
+      !this.validateLength(this.webExcerpt.trim(), '网页摘录', MAX_EXCERPT_LENGTH) ||
+      !this.validateLength(this.webNote.trim(), '个人笔记', MAX_NOTE_LENGTH) ||
+      !this.validateLength(this.webTags, '标签', MAX_TAGS_LENGTH)) {
       return;
     }
     const draft: WebDraft = {
@@ -2074,8 +2204,10 @@ struct Index {
     this.statusMessage = '正在选择 Markdown 导出位置…';
     try {
       const content = this.exportService.buildMarkdown(documents, cards, title);
-      const saved = await this.exportService.exportMarkdown(context, content);
-      this.showTransientStatus(saved ? 'Markdown 学习笔记已导出' : '已取消导出');
+      const result = await this.exportService.exportMarkdown(context, content, title);
+      this.showTransientStatus(result === undefined ?
+        '已取消导出' :
+        `已导出 ${documents.length} 份资料、${cards.length} 张证据卡：${result.fileName}`);
     } catch (error) {
       this.statusMessage = '导出失败，请检查目标位置是否可写';
     }
@@ -2107,7 +2239,10 @@ struct Index {
     if (this.selectedTag.length > 0) {
       const documentIds = documents.map((document: DocumentRecord): string => document.id);
       cards = cards.filter((card: EvidenceCard): boolean =>
-        documentIds.includes(card.documentId) && tagList(card.tags).includes(this.selectedTag));
+        documentIds.includes(card.documentId) &&
+        (tagList(card.tags).includes(this.selectedTag) ||
+          this.documentById(card.documentId) !== undefined &&
+          tagList(this.documentById(card.documentId)!.tags).includes(this.selectedTag)));
       title = `阅迹学习笔记 - #${this.selectedTag}`;
     }
     this.exportDocuments(documents, cards, title);
@@ -2208,23 +2343,31 @@ struct Index {
 
   private handleDrop(event: DragEvent): void {
     this.isDragOver = false;
+    let unsupportedFileFound = false;
     try {
       const records = event.getData().getRecords();
       for (let index = 0; index < records.length; index++) {
         const record = records[index];
+        const recordType = record.getType();
         let value = record.getValue();
-        if (record.getType() !== 'general.file-uri') {
+        if (recordType !== 'general.file-uri') {
           value = record.getEntry('general.file-uri');
         }
         const uri = this.uriFromDragValue(value);
         if (uri.length > 0) {
+          if (recordType !== 'com.adobe.pdf' && !this.importService.isPdfUri(uri)) {
+            unsupportedFileFound = true;
+            continue;
+          }
           event.setResult(DragResult.DRAG_SUCCESSFUL);
           this.importPdfFromUri(uri);
           return;
         }
       }
       event.setResult(DragResult.DRAG_FAILED);
-      this.statusMessage = '未识别到可读取的 PDF 文件';
+      this.statusMessage = unsupportedFileFound ?
+        '阅迹目前只支持拖放 .pdf 文件，请改用 PDF 后重试' :
+        '未识别到可读取的 PDF 文件';
     } catch (error) {
       event.setResult(DragResult.DRAG_FAILED);
       this.statusMessage = '拖放数据读取失败，请使用“导入 PDF”选择文件';
@@ -2477,6 +2620,36 @@ struct Index {
       return true;
     }
     return false;
+  }
+
+  @Builder
+  private TagSuggestions(current: () => string, apply: (value: string) => void): void {
+    if (this.tagSuggestions(current()).length > 0) {
+      Scroll() {
+        Row({ space: 6 }) {
+          Text('已有标签')
+            .fontSize(10)
+            .fontColor(this.mutedText());
+          ForEach(this.tagSuggestions(current()), (tag: string): void => {
+            Button(`#${tag}`)
+              .height(26)
+              .fontSize(10)
+              .fontColor(this.accentColor())
+              .backgroundColor(this.accentSoft())
+              .border({ width: 1, color: this.dividerColor() })
+              .borderRadius(6)
+              .padding({ left: 8, right: 8 })
+              .onClick((): void => {
+                apply(this.completeTagValue(current(), tag));
+              });
+          }, (tag: string): string => tag);
+        }
+        .height(28);
+      }
+      .width('100%')
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off);
+    }
   }
 
   @Builder
@@ -3146,6 +3319,7 @@ struct Index {
             .id('librarySearch')
             .width(this.windowWidth < 900 ? 210 : 280)
             .height(36)
+            .maxLength(MAX_SEARCH_LENGTH)
             .fontSize(13)
             .fontColor(this.primaryText())
             .placeholderColor(this.mutedText())
@@ -3228,6 +3402,7 @@ struct Index {
         TextInput({ placeholder: '页码', text: this.pageInput })
           .width(56)
           .height(34)
+          .maxLength(6)
           .fontSize(12)
           .fontColor(this.primaryText())
           .textAlign(TextAlign.Center)
@@ -3250,6 +3425,7 @@ struct Index {
           .id('pdfSearch')
           .width(this.windowWidth < 1200 ? 150 : 210)
           .height(34)
+          .maxLength(MAX_SEARCH_LENGTH)
           .fontSize(12)
           .fontColor(this.primaryText())
           .placeholderColor(this.mutedText())
@@ -3411,6 +3587,7 @@ struct Index {
         TextArea({ placeholder: '写下这段原文为什么重要…', text: this.evidenceNote })
           .width('100%')
           .height(78)
+          .maxLength(MAX_NOTE_LENGTH)
           .fontSize(12)
           .fontColor(this.primaryText())
           .placeholderColor(this.mutedText())
@@ -3424,6 +3601,7 @@ struct Index {
         TextInput({ placeholder: '标签，使用逗号分隔', text: this.evidenceTags })
           .width('100%')
           .height(34)
+          .maxLength(MAX_TAGS_LENGTH)
           .fontSize(12)
           .fontColor(this.primaryText())
           .placeholderColor(this.mutedText())
@@ -3434,6 +3612,12 @@ struct Index {
             this.evidenceTags = value;
           })
           .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
+        this.TagSuggestions(
+          (): string => this.evidenceTags,
+          (value: string): void => {
+            this.evidenceTags = value;
+          }
+        );
         Row({ space: 8 }) {
           this.ToolButton((): string => '取消选区', (): void => {
             this.cancelEvidenceDraft();
@@ -3491,6 +3675,12 @@ struct Index {
           .backgroundColor(card.reviewStatus === 'MASTERED' ? this.accentSoft() : this.coralSoft());
       }
       .width('100%');
+      Text(this.evidenceLocationStatus(card))
+        .fontSize(10)
+        .fontColor(this.evidenceLocationStatusColor(card))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%');
       Text(card.quote)
         .fontSize(compact ? 12 : 13)
         .fontColor(this.primaryText())
@@ -3600,6 +3790,7 @@ struct Index {
         TextArea({ placeholder: '个人笔记', text: this.editingEvidenceNote })
           .width('100%')
           .height(72)
+          .maxLength(MAX_NOTE_LENGTH)
           .fontSize(12)
           .fontColor(this.primaryText())
           .backgroundColor(this.raisedBackground())
@@ -3613,6 +3804,7 @@ struct Index {
         TextInput({ placeholder: '标签，使用逗号分隔', text: this.editingEvidenceTags })
           .width('100%')
           .height(32)
+          .maxLength(MAX_TAGS_LENGTH)
           .fontSize(12)
           .fontColor(this.primaryText())
           .backgroundColor(this.raisedBackground())
@@ -3623,6 +3815,12 @@ struct Index {
             this.editingEvidenceTags = value;
           })
           .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
+        this.TagSuggestions(
+          (): string => this.editingEvidenceTags,
+          (value: string): void => {
+            this.editingEvidenceTags = value;
+          }
+        );
         Row({ space: 7 }) {
           this.AccentButton(
             (): string => this.isSavingEditor ?
@@ -3780,6 +3978,7 @@ struct Index {
             .id('reviewSearch')
             .width(this.windowWidth < 1000 ? 210 : 260)
             .height(36)
+            .maxLength(MAX_SEARCH_LENGTH)
             .fontSize(13)
             .fontColor(this.primaryText())
             .placeholderColor(this.mutedText())
@@ -3913,6 +4112,12 @@ struct Index {
           .layoutWeight(1);
       }
       .width('100%');
+      Text(this.evidenceLocationStatus(card))
+        .fontSize(10)
+        .fontColor(this.evidenceLocationStatusColor(card))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%');
       Scroll() {
         Column({ space: 14 }) {
           Text(card.quote)
@@ -4027,6 +4232,7 @@ struct Index {
             TextInput({ placeholder: '标题（可选）', text: this.webTitle })
               .width('100%')
               .height(38)
+              .maxLength(MAX_TITLE_LENGTH)
               .fontColor(this.primaryText())
               .placeholderColor(this.mutedText())
               .backgroundColor(this.raisedBackground())
@@ -4040,6 +4246,7 @@ struct Index {
             TextInput({ placeholder: 'https://example.com/article', text: this.webUrl })
               .width('100%')
               .height(38)
+              .maxLength(MAX_URL_LENGTH)
               .fontColor(this.primaryText())
               .placeholderColor(this.mutedText())
               .backgroundColor(this.raisedBackground())
@@ -4050,9 +4257,15 @@ struct Index {
                 this.webUrl = value;
               })
               .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
+            Text(this.webUrlStatus())
+              .fontSize(10)
+              .fontColor(this.webUrlStatusColor())
+              .lineHeight(16)
+              .width('100%');
             TextArea({ placeholder: '粘贴需要保留的原文摘录', text: this.webExcerpt })
               .width('100%')
               .height(120)
+              .maxLength(MAX_EXCERPT_LENGTH)
               .fontColor(this.primaryText())
               .placeholderColor(this.mutedText())
               .backgroundColor(this.raisedBackground())
@@ -4066,6 +4279,7 @@ struct Index {
             TextArea({ placeholder: '个人笔记', text: this.webNote })
               .width('100%')
               .height(90)
+              .maxLength(MAX_NOTE_LENGTH)
               .fontColor(this.primaryText())
               .placeholderColor(this.mutedText())
               .backgroundColor(this.raisedBackground())
@@ -4079,6 +4293,7 @@ struct Index {
             TextInput({ placeholder: '标签，使用逗号分隔', text: this.webTags })
               .width('100%')
               .height(38)
+              .maxLength(MAX_TAGS_LENGTH)
               .fontColor(this.primaryText())
               .placeholderColor(this.mutedText())
               .backgroundColor(this.raisedBackground())
@@ -4089,6 +4304,12 @@ struct Index {
                 this.webTags = value;
               })
               .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
+            this.TagSuggestions(
+              (): string => this.webTags,
+              (value: string): void => {
+                this.webTags = value;
+              }
+            );
           }
           .width('100%');
         }
@@ -4154,6 +4375,7 @@ struct Index {
         TextInput({ placeholder: '资料标题', text: this.pdfTitle })
           .width('100%')
           .height(38)
+          .maxLength(MAX_TITLE_LENGTH)
           .fontColor(this.primaryText())
           .placeholderColor(this.mutedText())
           .backgroundColor(this.raisedBackground())
@@ -4167,6 +4389,7 @@ struct Index {
         TextInput({ placeholder: '标签，使用逗号分隔', text: this.pdfTags })
           .width('100%')
           .height(38)
+          .maxLength(MAX_TAGS_LENGTH)
           .fontColor(this.primaryText())
           .placeholderColor(this.mutedText())
           .backgroundColor(this.raisedBackground())
@@ -4177,6 +4400,12 @@ struct Index {
             this.pdfTags = value;
           })
           .onKeyEvent((event: KeyEvent): boolean => this.handleEditingShortcut(event));
+        this.TagSuggestions(
+          (): string => this.pdfTags,
+          (value: string): void => {
+            this.pdfTags = value;
+          }
+        );
         Row({ space: 9 }) {
           Blank();
           this.ToolButton((): string => '取消', (): void => {

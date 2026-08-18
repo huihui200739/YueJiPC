@@ -80,10 +80,10 @@ export class EvidenceRepository {
     }
   }
 
-  async deleteByDocument(documentId: string): Promise<void> {
+  async deleteByDocument(documentId: string): Promise<number> {
     const predicates = new relationalStore.RdbPredicates('evidence_cards');
     predicates.equalTo('document_id', documentId);
-    await this.database.getStore().delete(predicates);
+    return await this.database.getStore().delete(predicates);
   }
 
   private async updateById(id: string, values: relationalStore.ValuesBucket): Promise<void> {

@@ -127,13 +127,19 @@ export class LibraryRepository {
   async delete(id: string): Promise<void> {
     const predicates = new relationalStore.RdbPredicates('documents');
     predicates.equalTo('id', id);
-    await this.database.getStore().delete(predicates);
+    const deletedCount = await this.database.getStore().delete(predicates);
+    if (deletedCount !== 1) {
+      throw new Error('Document was not deleted');
+    }
   }
 
   private async updateById(id: string, values: relationalStore.ValuesBucket): Promise<void> {
     const predicates = new relationalStore.RdbPredicates('documents');
     predicates.equalTo('id', id);
-    await this.database.getStore().update(values, predicates);
+    const updatedCount = await this.database.getStore().update(values, predicates);
+    if (updatedCount !== 1) {
+      throw new Error('Document was not updated');
+    }
   }
 
   private readRecord(resultSet: relationalStore.ResultSet): DocumentRecord {
