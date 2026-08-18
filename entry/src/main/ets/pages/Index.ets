@@ -1673,6 +1673,10 @@ struct Index {
       this.statusMessage = '证据卡删除失败';
       return;
     }
+    this.selectedEvidenceIds = this.selectedEvidenceIds.filter(
+      (id: string): boolean => id !== card.id
+    );
+    this.showCompareView = false;
     let listReloaded = true;
     try {
       this.evidenceCards = await this.evidenceRepository.listAll();
@@ -1806,6 +1810,7 @@ struct Index {
   private runSearch(): void {
     const keyword = this.searchText.trim();
     if (this.documentPath.length === 0) {
+      this.clearPdfSearch('请先打开 PDF 后搜索');
       return;
     }
     if (keyword.length === 0) {
@@ -1814,6 +1819,9 @@ struct Index {
     }
     const generation = ++this.searchGeneration;
     this.searchedText = keyword;
+    this.searchCount = 0;
+    this.searchIndex = 0;
+    this.statusMessage = `正在搜索“${keyword}”…`;
     this.pdfController.searchKey(keyword, (count: number): void => {
       if (generation !== this.searchGeneration || this.searchText.trim() !== keyword) {
         return;
@@ -2006,8 +2014,14 @@ struct Index {
       return false;
     }
     const keyword = this.reviewSearch.trim().toLowerCase();
-    if (this.reviewSelectedTag.length > 0 && !tagList(card.tags).includes(this.reviewSelectedTag)) {
-      return false;
+    const document = this.documentById(card.documentId);
+    if (this.reviewSelectedTag.length > 0) {
+      const cardHasTag = tagList(card.tags).includes(this.reviewSelectedTag);
+      const documentHasTag = document !== undefined &&
+        tagList(document.tags).includes(this.reviewSelectedTag);
+      if (!cardHasTag && !documentHasTag) {
+        return false;
+      }
     }
     if (keyword.length === 0) {
       return true;
@@ -2015,7 +2029,11 @@ struct Index {
     return card.quote.toLowerCase().includes(keyword) ||
       card.note.toLowerCase().includes(keyword) ||
       card.tags.toLowerCase().includes(keyword) ||
-      this.documentTitle(card.documentId).toLowerCase().includes(keyword);
+      this.documentTitle(card.documentId).toLowerCase().includes(keyword) ||
+      (document !== undefined && (
+        document.source.toLowerCase().includes(keyword) ||
+        document.tags.toLowerCase().includes(keyword)
+      ));
   }
 
   private filteredReviewCards(): EvidenceCard[] {
