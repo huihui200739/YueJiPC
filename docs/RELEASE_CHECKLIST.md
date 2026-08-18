@@ -16,6 +16,8 @@
 - [x] JSON 结构化备份与恢复、恢复前快照和事务性删除保护
 - [x] 数据健康检查、证据来源类型/孤儿关系提示和脱敏诊断导出
 - [x] 应用沙箱快照/PDF 导入临时写入后移动；备份、Markdown、诊断导出准确传播写入/关闭失败
+- [x] 启动时清理导入、PDF 修复和备份临时文件；PDF 修复完成校验后原子替换
+- [x] 备份恢复区分事务回滚成功、回滚失败和数据已写入但界面重载失败
 - [x] 数据库 schema 版本标记、升级迁移、索引和清理触发器
 - [x] 暗色、专注、快捷键、拖放和窄窗口布局
 - [x] 数据本地存储，系统级备份恢复关闭；应用内 JSON 备份由用户主动操作
@@ -25,7 +27,7 @@
 
 - [x] Debug 构建通过
 - [x] Release 无签名构建通过
-- [x] 数据完整性单元测试通过
+- [x] 26 个 API 24 数据完整性单元测试通过
 - [x] 生成配置确认为 Release 模式且 `debug:false`
 - [ ] AppGallery Connect 应用已创建
 - [ ] 发布证书和 Profile 配置完成
@@ -36,12 +38,11 @@
 当前无签名产物：
 
 - HAP 路径：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- HAP 大小：506876 bytes
-- HAP SHA-256：`9944a3f89f03bb7138f23726ece8a68f2b9fe9a77d25b2e095f8f687fe477fff`
+- HAP 大小：510924 bytes
+- HAP SHA-256：`840a79514b76d537e20216d97876ec12f3b89b58834b16f84b8daedc71a4df3c`
 - APP 路径：`build/outputs/default/YueJiPC-default-unsigned.app`
-- APP 大小：220969 bytes
-- APP 大小：223438 bytes
-- APP SHA-256：`2405f18bf910328980cc1c8ac86d771a30231abb2a1f168d37c56ecd116c0ed8`
+- APP 大小：225426 bytes
+- APP SHA-256：`c383f535d653fd90a57b7cae0cddea97a00ff1fcfc18d957e66691af70aac3c`
 - 构建时间：2026 年 8 月 18 日（以本轮构建产物文件时间为准）
 
 完成发布签名后，必须重新记录已签名产物的文件名、大小和 SHA-256；当前哈希不能作为送审包哈希。
@@ -95,7 +96,7 @@
 - [x] 本地源码区检查无证书、私钥、Profile、凭据和测试 PDF
 - [x] 建立公开代码仓库并复查待发布文件
 
-本轮代码改动（数据库级联、输入边界、网址校验、证据来源状态、导出、拖放、主题集合、批量操作、备份恢复和数据健康）已通过 Debug/Release 无签名构建及数据完整性单元测试，相关人工回归见 [docs/TEST_PLAN.md](TEST_PLAN.md) 的“2026 年 8 月 18 日代码变更回归范围”，当前均不提前标记为通过。
+本轮代码改动（数据库级联、输入边界、网址校验、证据来源状态、导出、拖放、主题集合、批量操作、备份恢复、数据健康、临时文件清理和事务失败状态）已通过 Debug/Release 无签名构建及 26 个数据完整性单元测试，相关人工回归见 [docs/TEST_PLAN.md](TEST_PLAN.md) 的“2026 年 8 月 18 日代码变更回归范围”，当前均不提前标记为通过。
 
 ## 时间节点
 

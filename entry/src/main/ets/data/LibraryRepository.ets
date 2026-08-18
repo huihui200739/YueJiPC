@@ -200,6 +200,23 @@ export class LibraryRepository {
     await this.updateById(id, values);
   }
 
+  async updatePdfRestoration(
+    id: string,
+    source: string,
+    contentHash: string,
+    pageCount: number,
+    currentPage: number
+  ): Promise<void> {
+    const values: relationalStore.ValuesBucket = {
+      source: source,
+      content_hash: contentHash,
+      page_count: pageCount,
+      current_page: currentPage,
+      last_read_at: Date.now()
+    };
+    await this.updateById(id, values);
+  }
+
   async setFavorite(id: string, favorite: boolean): Promise<void> {
     const values: relationalStore.ValuesBucket = {
       favorite: favorite ? 1 : 0

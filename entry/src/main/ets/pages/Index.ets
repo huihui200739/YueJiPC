@@ -8,6 +8,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CollectionRepository } from '../data/CollectionRepository';
 import { EvidenceRepository } from '../data/EvidenceRepository';
 import { LibraryRepository } from '../data/LibraryRepository';
+import { TransactionFailureError } from '../data/TransactionError';
 import { YueJiDatabase } from '../data/YueJiDatabase';
 import {
   AppSettings,
@@ -45,6 +46,10 @@ import { ImportService, ImportedPdf } from '../services/ImportService';
 import { LinkService, WebDraft } from '../services/LinkService';
 import { ReviewScheduler } from '../services/ReviewScheduler';
 import { SettingsService } from '../services/SettingsService';
+import {
+  StorageCleanupResult,
+  StorageMaintenanceService
+} from '../services/StorageMaintenanceService';
 import { WorkspaceService } from '../services/WorkspaceService';
 import { FileFingerprintService } from '../services/FileFingerprintService';
 
@@ -210,6 +215,7 @@ struct Index {
   private dataHealthService: DataHealthService = new DataHealthService();
   private diagnosticService: DiagnosticService = new DiagnosticService();
   private settingsService: SettingsService = new SettingsService();
+  private storageMaintenanceService: StorageMaintenanceService = new StorageMaintenanceService();
   private workspaceService: WorkspaceService = new WorkspaceService();
   private fingerprintService: FileFingerprintService = new FileFingerprintService();
   private reviewScheduler: ReviewScheduler = new ReviewScheduler();
@@ -725,6 +731,7 @@ struct Index {
       return;
     }
     try {
+      const cleanupResult = this.storageMaintenanceService.cleanup(context.filesDir);
       await this.database.initialize(context);
       await this.settingsService.initialize(context);
       await this.workspaceService.initialize(context);
@@ -740,13 +747,24 @@ struct Index {
       this.workspaceReady = true;
       this.isReady = true;
       this.refreshHealthReport();
-      this.showTransientStatus(workspaceMessage.length > 0 ? workspaceMessage :
+      const readyMessage = workspaceMessage.length > 0 ? workspaceMessage :
         this.documents.length > 0 ?
           `已恢复 ${this.documents.length} 份资料与 ${this.evidenceCards.length} 张证据卡` :
-          '资料库已就绪，导入一份 PDF 或添加网页资料');
+          '资料库已就绪，导入一份 PDF 或添加网页资料';
+      this.showTransientStatus(this.appendStorageCleanupStatus(readyMessage, cleanupResult));
     } catch (error) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'Application initialization failed: %{public}s', JSON.stringify(error));
       this.statusMessage = '本地资料库初始化失败，请检查存储空间后重试';
     }
+  }
+
+  private appendStorageCleanupStatus(message: string, result: StorageCleanupResult): string {
+    if (result.removedCount === 0 && result.failedCount === 0) {
+      return message;
+    }
+    return message +
+      (result.removedCount > 0 ? `；已清理 ${result.removedCount} 个中断写入临时文件` : '') +
+      (result.failedCount > 0 ? `；${result.failedCount} 个临时文件清理失败，请检查存储状态` : '');
   }
 
   private async restoreWorkspace(workspace: WorkspaceState): Promise<string> {
@@ -1197,7 +1215,7 @@ struct Index {
     }
     this.isLoading = true;
     this.statusMessage = `请选择“${record.title}”对应的原始 PDF…`;
-    const temporaryPath = `${record.source}.restore-${Date.now()}.tmp`;
+    const temporaryPath = `${record.source}.restore.tmp`;
     let movedToSource = false;
     try {
       const uri = await this.importService.choosePdfUri(context);
@@ -1206,6 +1224,9 @@ struct Index {
         return;
       }
       this.statusMessage = `正在校验“${record.title}”…`;
+      if (this.importService.fileExists(temporaryPath)) {
+        await fs.unlink(temporaryPath);
+      }
       await this.importService.copyPdfToPath(uri, temporaryPath);
       const validationController = new pdfViewManager.PdfController();
       let validationResult: pdfService.ParseResult;
@@ -1240,8 +1261,13 @@ struct Index {
       await fs.moveFile(temporaryPath, record.source);
       movedToSource = true;
       const restoredPage = Math.min(Math.max(0, record.currentPage), Math.max(0, actualPageCount - 1));
-      await this.libraryRepository.updatePdfSourceFingerprint(record.id, record.source, contentHash);
-      await this.libraryRepository.updatePdfMetadata(record.id, actualPageCount, restoredPage);
+      await this.libraryRepository.updatePdfRestoration(
+        record.id,
+        record.source,
+        contentHash,
+        actualPageCount,
+        restoredPage
+      );
       this.updateLocalDocument(record.id, restoredPage, actualPageCount);
       await this.flushReadPositionBeforeDocumentChange();
       if (this.documentPath.length > 0) {
@@ -2547,6 +2573,9 @@ struct Index {
     }
     const payload = this.pendingBackup;
     const normalizedPayload = this.backupService.normalizePayload(payload, context.filesDir);
+    let snapshotFileName = '';
+    let databaseRestoreStarted = false;
+    let databaseReplaced = false;
     this.isRestoring = true;
     this.showRestoreConfirm = false;
     this.statusMessage = '正在替换本地资料库…';
@@ -2562,6 +2591,7 @@ struct Index {
         currentSettings
       );
       const snapshot = await this.backupService.savePreRestoreSnapshot(context, currentPayload);
+      snapshotFileName = snapshot.fileName;
       if (this.documentPath.length > 0) {
         this.pdfController.releaseDocument();
       }
@@ -2575,7 +2605,9 @@ struct Index {
       this.closeEditor('PDF');
       this.closeEditor('EVIDENCE');
       await this.releaseThumbnails();
+      databaseRestoreStarted = true;
       await this.backupService.replaceDatabase(this.database, normalizedPayload);
+      databaseReplaced = true;
       let settingsSaved = true;
       try {
         await this.settingsService.save(normalizedPayload.settings);
@@ -2597,15 +2629,35 @@ struct Index {
         `${normalizedPayload.collections.length} 个集合` +
         `${missingPdfCount > 0 ? `；${missingPdfCount} 份 PDF 需要重新导入` : ''}` +
         `${settingsSaved ? '' : '；界面设置将在下次启动时使用原值'}` +
-        `；恢复前快照已保存为 ${snapshot.fileName}`
+        `；恢复前快照已保存为 ${snapshotFileName}`
       );
       this.refreshHealthReport();
     } catch (error) {
+      let reloadSucceeded = true;
       try {
         await this.reloadData();
       } catch (reloadError) {
+        reloadSucceeded = false;
       }
-      this.statusMessage = '数据恢复失败，数据库事务已回滚';
+      if (databaseReplaced) {
+        this.statusMessage = reloadSucceeded ?
+          `备份数据已写入，但恢复后的界面状态未完整应用；请重新启动应用` +
+            (snapshotFileName.length > 0 ? `，恢复前快照为 ${snapshotFileName}` : '') :
+          `备份数据已写入，但当前无法重新读取资料库；请重新启动应用并检查数据健康状态` +
+            (snapshotFileName.length > 0 ? `，恢复前快照为 ${snapshotFileName}` : '');
+      } else if (error instanceof TransactionFailureError) {
+        this.statusMessage = error.rollbackFailed ?
+          `数据恢复失败且数据库回滚未确认；请重新启动应用并检查数据健康状态` +
+            (snapshotFileName.length > 0 ? `，恢复前快照为 ${snapshotFileName}` : '') :
+          `数据恢复失败，数据库事务已回滚` +
+            (snapshotFileName.length > 0 ? `；恢复前快照为 ${snapshotFileName}` : '');
+      } else if (databaseRestoreStarted) {
+        this.statusMessage =
+          `数据恢复失败，数据库状态未确认；请重新启动应用并检查数据健康状态` +
+          (snapshotFileName.length > 0 ? `，恢复前快照为 ${snapshotFileName}` : '');
+      } else {
+        this.statusMessage = '数据恢复尚未开始，本机资料库未被替换';
+      }
     } finally {
       this.pendingBackup = undefined;
       this.isRestoring = false;

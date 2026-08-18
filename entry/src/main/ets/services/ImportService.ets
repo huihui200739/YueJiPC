@@ -96,7 +96,7 @@ export class ImportService {
   }
 
   async copyPdfToPath(uri: string, targetPath: string): Promise<void> {
-    const temporaryPath = `${targetPath}.import-${Date.now()}.tmp`;
+    const temporaryPath = `${targetPath}.import.tmp`;
     try {
       if (this.fileExists(targetPath)) {
         throw new Error('目标 PDF 已存在，未覆盖原文件');

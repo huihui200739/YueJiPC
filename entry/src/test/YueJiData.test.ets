@@ -23,7 +23,11 @@ import {
 } from '../main/ets/services/DataHealthService';
 import { DiagnosticService } from '../main/ets/services/DiagnosticService';
 import { ReviewScheduler } from '../main/ets/services/ReviewScheduler';
-import { transactionFailure } from '../main/ets/data/TransactionError';
+import {
+  TransactionFailureError,
+  transactionFailure
+} from '../main/ets/data/TransactionError';
+import { isManagedTemporaryPath } from '../main/ets/services/StorageMaintenanceService';
 
 interface BackupDocumentWithoutNewFields {
   id: string;
@@ -563,6 +567,19 @@ export default function yueJiDataTest(): void {
         '数据库不可用'
       );
       expect(operationFailure.message).assertEqual('备份恢复失败: 数据库不可用');
+      expect(rollbackFailure instanceof TransactionFailureError).assertTrue();
+      expect(rollbackFailure.rollbackFailed).assertTrue();
+      expect(operationFailure.rollbackFailed).assertFalse();
+    });
+
+    it('recognizes only YueJi managed interrupted-write files', 0, (): void => {
+      expect(isManagedTemporaryPath('doc/source.pdf.import.tmp')).assertTrue();
+      expect(isManagedTemporaryPath('doc/source.pdf.restore.tmp')).assertTrue();
+      expect(isManagedTemporaryPath('doc/source.pdf.import-1787040000000.tmp')).assertTrue();
+      expect(isManagedTemporaryPath('pre-restore-20260818-1787040000000.json.tmp')).assertTrue();
+      expect(isManagedTemporaryPath('doc/source.pdf')).assertFalse();
+      expect(isManagedTemporaryPath('notes.tmp')).assertFalse();
+      expect(isManagedTemporaryPath('pre-restore-20260818.json')).assertFalse();
     });
   });
 }
