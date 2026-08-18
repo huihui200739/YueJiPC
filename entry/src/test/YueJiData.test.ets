@@ -23,6 +23,7 @@ import {
 } from '../main/ets/services/DataHealthService';
 import { DiagnosticService } from '../main/ets/services/DiagnosticService';
 import { ReviewScheduler } from '../main/ets/services/ReviewScheduler';
+import { transactionFailure } from '../main/ets/data/TransactionError';
 
 interface BackupDocumentWithoutNewFields {
   id: string;
@@ -547,6 +548,21 @@ export default function yueJiDataTest(): void {
       expect(json.includes('https://example.com/article')).assertFalse();
       expect(json.includes('documentCount')).assertTrue();
       expect(json.includes('databaseSchemaVersion')).assertTrue();
+    });
+
+    it('preserves both operation and rollback failures', 0, (): void => {
+      const rollbackFailure = transactionFailure(
+        '批量标签更新失败',
+        new Error('写入失败'),
+        new Error('回滚失败')
+      );
+      expect(rollbackFailure.message).assertEqual('批量标签更新失败: 写入失败; rollback failed: 回滚失败');
+
+      const operationFailure = transactionFailure(
+        '备份恢复失败',
+        '数据库不可用'
+      );
+      expect(operationFailure.message).assertEqual('备份恢复失败: 数据库不可用');
     });
   });
 }

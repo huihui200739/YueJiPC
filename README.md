@@ -22,6 +22,7 @@
 - 亮色、暗色、专注模式和窄窗口侧栏
 - `Ctrl/Cmd+O` 导入、`Ctrl/Cmd+F` 搜索、`Ctrl/Cmd+S` 导出
 - 损坏、加密、丢失 PDF，无效网址和存储失败提示
+- 应用沙箱内的备份快照和 PDF 导入采用临时文件完成后再移动，避免半成品文件进入正式路径
 
 ## 技术栈
 
@@ -90,9 +91,9 @@ Release 构建：
 - 已验证普通、200 页、加密和损坏 PDF，以及阅读、证据卡、来源回跳、复习、Markdown 导出、重启恢复和窄窗口布局
 - 已检查 PDF 阅读工具栏的系统符号按钮和固定尺寸布局，启动后显示正常
 - 27 个 JSON/JSON5 配置均可解析；源码区未发现证书、私钥、Profile、凭据或测试 PDF
-- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，502432 bytes，SHA-256 `d62876d81896c139662d23ffe9faf00ca942eb8927cbada66fa25856e53e4bfc`
-- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，220969 bytes，SHA-256 `cde25144b9d1ac34be72d496439bc2ebdf8b3cafa56f3b08d1f6c6df2feb22c9`
-- 产物生成时间：2026 年 8 月 18 日 15:33:46（Asia/Shanghai）
+- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，506876 bytes，SHA-256 `9944a3f89f03bb7138f23726ece8a68f2b9fe9a77d25b2e095f8f687fe477fff`
+- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，223438 bytes，SHA-256 `2405f18bf910328980cc1c8ac86d771a30231abb2a1f168d37c56ecd116c0ed8`
+- 产物生成时间：2026 年 8 月 18 日（以本轮构建产物文件时间为准）
 - 本轮代码新增的数据库级联、输入长度、选区 JSON、网址、导出、拖放、备份恢复和数据健康边界，仍需按 [docs/TEST_PLAN.md](docs/TEST_PLAN.md) 完成人工回归
 - 发布签名、AppGallery Connect 配置、真机验证、3 名学生测试、30 分钟稳定性测试和商店送审仍需完成
 - 小艺输入法隐私协议未由本项目代为接受；文字输入和键盘快捷键仍需开发者本人完成最终人工回归

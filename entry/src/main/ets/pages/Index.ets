@@ -2783,6 +2783,7 @@ struct Index {
   private async deleteDocument(document: DocumentRecord): Promise<void> {
     let recordDeleted = false;
     let cleanupWarning = false;
+    let restoreWarning = false;
     let archivedPdf: DeletedPdfArchive | undefined = undefined;
     let snapshotFileName: string = '';
     try {
@@ -2841,12 +2842,15 @@ struct Index {
         try {
           await this.backupService.restoreArchivedPdf(archivedPdf);
         } catch (restoreError) {
+          restoreWarning = true;
         }
       }
       await this.reloadData();
       this.statusMessage = recordDeleted ?
         '资料和关联证据已删除，但部分本地文件可能需要稍后清理' :
-        '资料删除失败，现有资料和证据卡未被修改';
+        (restoreWarning ?
+          '资料删除失败，PDF 暂未恢复；资料记录和证据卡仍保留，请检查数据健康状态' :
+          '资料删除失败，现有资料和证据卡未被修改');
     }
   }
 

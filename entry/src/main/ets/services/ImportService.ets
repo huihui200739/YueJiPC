@@ -2,6 +2,7 @@ import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { createId, DocumentRecord } from '../model/Models';
+import { errorMessage } from '../data/TransactionError';
 import { FileFingerprintService } from './FileFingerprintService';
 
 const LOG_DOMAIN: number = 0x59A1;
@@ -95,7 +96,11 @@ export class ImportService {
   }
 
   async copyPdfToPath(uri: string, targetPath: string): Promise<void> {
+    const temporaryPath = `${targetPath}.import-${Date.now()}.tmp`;
     try {
+      if (this.fileExists(targetPath)) {
+        throw new Error('目标 PDF 已存在，未覆盖原文件');
+      }
       const lastSlash = targetPath.lastIndexOf('/');
       if (lastSlash > 0) {
         const targetDirectory = targetPath.substring(0, lastSlash);
@@ -103,14 +108,34 @@ export class ImportService {
           await fs.mkdir(targetDirectory, true);
         }
       }
+      await this.removeFileIfPresent(temporaryPath);
       const source = await fs.open(uri, fs.OpenMode.READ_ONLY);
+      let copyFailure: Error | undefined = undefined;
       try {
-        await fs.copyFile(source.fd, targetPath);
+        await fs.copyFile(source.fd, temporaryPath);
+      } catch (error) {
+        copyFailure = new Error(errorMessage(error, 'PDF 文件复制失败'));
       } finally {
-        await fs.close(source);
+        try {
+          await fs.close(source);
+        } catch (error) {
+          if (copyFailure === undefined) {
+            copyFailure = new Error(errorMessage(error, 'PDF 源文件关闭失败'));
+          }
+        }
       }
+      if (copyFailure !== undefined) {
+        throw copyFailure;
+      }
+      if (this.fileExists(targetPath)) {
+        throw new Error('目标 PDF 已存在，未覆盖原文件');
+      }
+      await fs.moveFile(temporaryPath, targetPath);
     } catch (error) {
-      await this.removeImportedPdf(targetPath);
+      await this.removeFileQuietly(temporaryPath);
+      if (!this.fileExists(targetPath)) {
+        await this.removeImportedPdf(targetPath);
+      }
       hilog.error(LOG_DOMAIN, LOG_TAG, 'PDF copy failed: %{public}s', JSON.stringify(error));
       if (error instanceof Error) {
         throw error;
@@ -147,4 +172,18 @@ export class ImportService {
       return false;
     }
   }
+
+  private async removeFileIfPresent(path: string): Promise<void> {
+    if (this.fileExists(path)) {
+      await fs.unlink(path);
+    }
+  }
+
+  private async removeFileQuietly(path: string): Promise<void> {
+    try {
+      await this.removeFileIfPresent(path);
+    } catch (error) {
+    }
+  }
+
 }

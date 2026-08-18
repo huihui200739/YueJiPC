@@ -1,5 +1,6 @@
 import relationalStore from '@ohos.data.relationalStore';
 import { DocumentKind, DocumentRecord, EvidenceCard } from '../model/Models';
+import { transactionFailure } from './TransactionError';
 import { YueJiDatabase } from './YueJiDatabase';
 
 export class LibraryRepository {
@@ -52,8 +53,12 @@ export class LibraryRepository {
       }
       await store.commit(transactionId);
     } catch (error) {
-      await store.rollback(transactionId);
-      throw new Error('Web document transaction failed');
+      try {
+        await store.rollback(transactionId);
+      } catch (rollbackError) {
+        throw transactionFailure('Web document transaction failed', error, rollbackError);
+      }
+      throw transactionFailure('Web document transaction failed', error);
     }
   }
 
@@ -113,8 +118,12 @@ export class LibraryRepository {
       }
       await store.commit(transactionId);
     } catch (error) {
-      await store.rollback(transactionId);
-      throw new Error('Web document transaction failed');
+      try {
+        await store.rollback(transactionId);
+      } catch (rollbackError) {
+        throw transactionFailure('Web document transaction failed', error, rollbackError);
+      }
+      throw transactionFailure('Web document transaction failed', error);
     }
   }
 

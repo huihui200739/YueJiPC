@@ -7,6 +7,7 @@ import {
   uniqueIds
 } from '../model/Models';
 import { ReviewScheduler } from '../services/ReviewScheduler';
+import { transactionFailure } from './TransactionError';
 import { YueJiDatabase } from './YueJiDatabase';
 
 export class EvidenceRepository {
@@ -176,8 +177,12 @@ export class EvidenceRepository {
       await store.commit(transactionId);
       return existingIds.length;
     } catch (error) {
-      await store.rollback(transactionId);
-      throw new Error('Batch review status update failed');
+      try {
+        await store.rollback(transactionId);
+      } catch (rollbackError) {
+        throw transactionFailure('Batch review status update failed', error, rollbackError);
+      }
+      throw transactionFailure('Batch review status update failed', error);
     }
   }
 
@@ -209,8 +214,12 @@ export class EvidenceRepository {
       await store.commit(transactionId);
       return targetCards.length;
     } catch (error) {
-      await store.rollback(transactionId);
-      throw new Error('Batch tag update failed');
+      try {
+        await store.rollback(transactionId);
+      } catch (rollbackError) {
+        throw transactionFailure('Batch tag update failed', error, rollbackError);
+      }
+      throw transactionFailure('Batch tag update failed', error);
     }
   }
 

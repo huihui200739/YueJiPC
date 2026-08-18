@@ -74,10 +74,22 @@ export class DiagnosticService {
       return undefined;
     }
     const file = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    let writeFailure: Error | undefined = undefined;
     try {
       await fs.write(file.fd, this.serialize(snapshot));
+    } catch (error) {
+      writeFailure = error instanceof Error ? error : new Error('诊断文件导出失败');
     } finally {
-      await fs.close(file);
+      try {
+        await fs.close(file);
+      } catch (error) {
+        if (writeFailure === undefined) {
+          writeFailure = error instanceof Error ? error : new Error('诊断文件关闭失败');
+        }
+      }
+    }
+    if (writeFailure !== undefined) {
+      throw writeFailure;
     }
     return {
       uri: uris[0],

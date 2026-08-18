@@ -11,6 +11,7 @@ import {
 } from '../model/Models';
 import { canonicalPdfPath } from '../model/Models';
 import { YueJiDatabase } from '../data/YueJiDatabase';
+import { errorMessage, transactionFailure } from '../data/TransactionError';
 import { BackupValidationResult, BackupValidator } from './BackupValidator';
 
 export interface BackupFileResult {
@@ -85,10 +86,22 @@ export class BackupService {
     }
     const json = this.serialize(payload);
     const file = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    let writeFailure: Error | undefined = undefined;
     try {
       await fs.write(file.fd, json);
+    } catch (error) {
+      writeFailure = new Error(errorMessage(error, '备份文件导出失败'));
     } finally {
-      await fs.close(file);
+      try {
+        await fs.close(file);
+      } catch (error) {
+        if (writeFailure === undefined) {
+          writeFailure = new Error(errorMessage(error, '备份文件关闭失败'));
+        }
+      }
+    }
+    if (writeFailure !== undefined) {
+      throw writeFailure;
     }
     return {
       uri: uris[0],
@@ -123,7 +136,10 @@ export class BackupService {
 
   async restoreArchivedPdf(archive: DeletedPdfArchive): Promise<void> {
     if (!this.fileExists(archive.archivePath)) {
-      return;
+      throw new Error('PDF 删除归档不存在，无法恢复');
+    }
+    if (this.fileExists(archive.originalPath)) {
+      throw new Error('PDF 原路径已有文件，已保留删除归档');
     }
     const lastSlash = archive.originalPath.lastIndexOf('/');
     if (lastSlash > 0) {
@@ -233,11 +249,40 @@ export class BackupService {
     }
     const fileName = `${prefix}-${this.dateStamp()}-${Date.now()}.json`;
     const path = `${directory}/${fileName}`;
-    const file = await fs.open(path, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    const temporaryPath = `${path}.tmp`;
     try {
-      await fs.write(file.fd, this.serialize(payload));
-    } finally {
-      await fs.close(file);
+      await this.removeFileIfPresent(temporaryPath);
+      const file = await fs.open(
+        temporaryPath,
+        fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC
+      );
+      let writeFailure: Error | undefined = undefined;
+      try {
+        await fs.write(file.fd, this.serialize(payload));
+      } catch (error) {
+        writeFailure = new Error(errorMessage(error, '本地备份快照写入失败'));
+      } finally {
+        try {
+          await fs.close(file);
+        } catch (error) {
+          if (writeFailure === undefined) {
+            writeFailure = new Error(errorMessage(error, '本地备份快照关闭失败'));
+          }
+        }
+      }
+      if (writeFailure !== undefined) {
+        throw writeFailure;
+      }
+      if (this.fileExists(path)) {
+        throw new Error('本地备份快照已存在，未覆盖原文件');
+      }
+      await fs.moveFile(temporaryPath, path);
+    } catch (error) {
+      await this.removeFileQuietly(temporaryPath);
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('本地备份快照保存失败');
     }
     this.pruneSnapshots(directory, prefix, fileName);
     return { path: path, fileName: fileName };
@@ -301,8 +346,12 @@ export class BackupService {
       }
       await store.commit(transactionId);
     } catch (error) {
-      await store.rollback(transactionId);
-      throw new Error('Backup database restore failed');
+      try {
+        await store.rollback(transactionId);
+      } catch (rollbackError) {
+        throw transactionFailure('Backup database restore failed', error, rollbackError);
+      }
+      throw transactionFailure('Backup database restore failed', error);
     }
   }
 
@@ -339,6 +388,19 @@ export class BackupService {
       return fs.statSync(path).isFile();
     } catch (error) {
       return false;
+    }
+  }
+
+  private async removeFileIfPresent(path: string): Promise<void> {
+    if (this.fileExists(path)) {
+      await fs.unlink(path);
+    }
+  }
+
+  private async removeFileQuietly(path: string): Promise<void> {
+    try {
+      await this.removeFileIfPresent(path);
+    } catch (error) {
     }
   }
 
