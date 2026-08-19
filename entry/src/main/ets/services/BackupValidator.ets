@@ -20,6 +20,7 @@ import {
   MAX_URL_LENGTH,
   validateEvidenceSource
 } from '../model/Models';
+import { isValidHttpUrl } from './UrlValidation';
 
 export interface BackupValidationResult {
   valid: boolean;
@@ -147,7 +148,7 @@ export class BackupValidator {
         document.title.length === 0 ||
         document.title.length > MAX_TITLE_LENGTH ||
         document.source.length === 0 ||
-        document.source.length > MAX_URL_LENGTH * 2 ||
+        document.source.length > MAX_URL_LENGTH ||
         !Number.isInteger(document.pageCount) ||
         document.pageCount < 0 ||
         !Number.isInteger(document.currentPage) ||
@@ -160,7 +161,7 @@ export class BackupValidator {
         !this.isTimestamp(document.lastReadAt)) {
         return false;
       }
-      if (document.kind === 'WEB' && !/^https?:\/\//i.test(document.source)) {
+      if (document.kind === 'WEB' && !isValidHttpUrl(document.source, false)) {
         return false;
       }
       if (document.kind === 'WEB' && (document.pageCount !== 0 || document.currentPage !== 0)) {

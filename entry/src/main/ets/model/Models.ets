@@ -20,6 +20,8 @@ export const BACKUP_SCHEMA_VERSION: number = 2;
 export const LEGACY_BACKUP_SCHEMA_VERSION: number = 1;
 export const DATABASE_SCHEMA_VERSION: number = 3;
 export const APP_VERSION: string = '1.0.0';
+export const MIN_ZOOM_PERCENT: number = 50;
+export const MAX_ZOOM_PERCENT: number = 400;
 
 export interface DocumentRecord {
   id: string;
@@ -124,6 +126,14 @@ export interface EvidenceSourceValidation {
 
 export function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+export function normalizeZoomPercent(value: number, fallback: number = 100): number {
+  const safeFallback = Number.isFinite(fallback) ?
+    Math.min(MAX_ZOOM_PERCENT, Math.max(MIN_ZOOM_PERCENT, Math.round(fallback))) : 100;
+  return Number.isFinite(value) ?
+    Math.min(MAX_ZOOM_PERCENT, Math.max(MIN_ZOOM_PERCENT, Math.round(value))) :
+    safeFallback;
 }
 
 export function tagList(tags: string): string[] {

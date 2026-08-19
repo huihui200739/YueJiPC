@@ -10,7 +10,10 @@ import {
   EvidenceCard,
   EvidenceKind,
   isValidStoredSelectionJson,
+  MAX_ZOOM_PERCENT,
+  MIN_ZOOM_PERCENT,
   normalizeTags,
+  normalizeZoomPercent,
   ReviewStatus,
   uniqueIds
 } from '../main/ets/model/Models';
@@ -23,6 +26,8 @@ import {
 } from '../main/ets/services/DataHealthService';
 import { DiagnosticService } from '../main/ets/services/DiagnosticService';
 import { EvidenceCardMutationService } from '../main/ets/services/EvidenceCardMutationService';
+import { isValidHttpUrl, normalizeHttpUrl } from '../main/ets/services/UrlValidation';
+import { ReviewFilterService } from '../main/ets/services/ReviewFilterService';
 import { ReviewScheduler } from '../main/ets/services/ReviewScheduler';
 import {
   TransactionFailureError,
@@ -245,6 +250,73 @@ export default function yueJiDataTest(): void {
       expect(ids[0]).assertEqual('e-2');
       expect(ids[1]).assertEqual('e-1');
       expect(ids[2]).assertEqual('e-3');
+    });
+
+    it('keeps the complete PDF zoom range when normalizing persisted state', 0, (): void => {
+      expect(normalizeZoomPercent(MIN_ZOOM_PERCENT)).assertEqual(MIN_ZOOM_PERCENT);
+      expect(normalizeZoomPercent(MAX_ZOOM_PERCENT)).assertEqual(MAX_ZOOM_PERCENT);
+      expect(normalizeZoomPercent(450)).assertEqual(MAX_ZOOM_PERCENT);
+      expect(normalizeZoomPercent(49)).assertEqual(MIN_ZOOM_PERCENT);
+      expect(normalizeZoomPercent(274.6)).assertEqual(275);
+      expect(normalizeZoomPercent(Number.POSITIVE_INFINITY, 320)).assertEqual(320);
+    });
+
+    it('uses one strict HTTP URL rule for input and persisted sources', 0, (): void => {
+      expect(normalizeHttpUrl('  example.com/article  ')).assertEqual('https://example.com/article');
+      expect(isValidHttpUrl('example.com/article')).assertTrue();
+      expect(isValidHttpUrl('HTTPS://Example.com/article', false)).assertTrue();
+      expect(isValidHttpUrl('https://localhost:8080', false)).assertTrue();
+      expect(isValidHttpUrl('https://192.168.1.10:443/read', false)).assertTrue();
+      expect(isValidHttpUrl('https://', false)).assertFalse();
+      expect(isValidHttpUrl('example.com/article', false)).assertFalse();
+      expect(isValidHttpUrl('https://256.168.1.10', false)).assertFalse();
+      expect(isValidHttpUrl('https://example.com:65536', false)).assertFalse();
+    });
+
+    it('matches review cards against card and document content with case-insensitive tags', 0, (): void => {
+      const service = new ReviewFilterService();
+      const document = createDocument();
+      document.title = '操作系统课程论文';
+      document.source = 'https://example.com/operating-systems';
+      document.tags = 'Course, 期末';
+      document.excerpt = '课程资料摘录';
+      const card = createEvidence();
+      card.tags = '重点';
+
+      expect(service.matches(card, document, {
+        keyword: 'OPERATING-SYSTEMS',
+        selectedTag: ''
+      })).assertTrue();
+      expect(service.matches(card, document, {
+        keyword: '',
+        selectedTag: 'course'
+      })).assertTrue();
+      expect(service.matches(card, document, {
+        keyword: '',
+        selectedTag: '重点'
+      })).assertTrue();
+      expect(service.matches(card, document, {
+        keyword: '不存在的关键词',
+        selectedTag: ''
+      })).assertFalse();
+      expect(service.matches(card, document, {
+        keyword: '',
+        selectedTag: '实验'
+      })).assertFalse();
+    });
+
+    it('deduplicates tag suggestions across document and evidence card data', 0, (): void => {
+      const service = new ReviewFilterService();
+      const document = createDocument();
+      document.tags = 'Course, 课程';
+      const card = createEvidence();
+      card.tags = 'course, 重点';
+      const tags = service.allTags([document], [card]);
+
+      expect(tags.length).assertEqual(3);
+      expect(tags.includes('Course')).assertTrue();
+      expect(tags.includes('课程')).assertTrue();
+      expect(tags.includes('重点')).assertTrue();
     });
 
     it('puts new unscheduled review cards into the queue immediately', 0, (): void => {
@@ -501,6 +573,18 @@ export default function yueJiDataTest(): void {
       expect(result.valid).assertTrue();
     });
 
+    it('rejects web backups whose source only contains a protocol', 0, (): void => {
+      const payload = createPayload();
+      payload.documents = [createWebDocument()];
+      payload.documents[0].source = 'https://';
+      payload.evidenceCards = [createWebEvidence()];
+      payload.collectionItems = [
+        createCollectionItem('web-1', 'DOCUMENT'),
+        createCollectionItem('web-evidence-1', 'EVIDENCE')
+      ];
+      expect(new BackupValidator().validateJson(JSON.stringify(payload)).valid).assertFalse();
+    });
+
     it('rejects evidence kinds and geometry that do not match their source', 0, (): void => {
       const pdfQuote = createPayload();
       pdfQuote.evidenceCards[0].kind = 'QUOTE';
@@ -590,7 +674,7 @@ export default function yueJiDataTest(): void {
 
     it('reports broken evidence, selection, page, collection and web relations', 0, (): void => {
       const documents: DocumentRecord[] = [createDocument(), createWebDocument()];
-      documents[1].source = 'example.com/article';
+      documents[1].source = 'https://';
       const invalidWebCard = createWebEvidence();
       invalidWebCard.kind = 'UNDERLINE';
       invalidWebCard.rectsJson = createEvidence().rectsJson;

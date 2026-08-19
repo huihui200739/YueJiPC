@@ -2,6 +2,7 @@ import preferences from '@ohos.data.preferences';
 import {
   LibraryScope,
   MainView,
+  normalizeZoomPercent,
   ReviewFilter,
   WorkspaceState
 } from '../model/Models';
@@ -61,8 +62,7 @@ export class WorkspaceService {
     const reviewFilter: ReviewFilter =
       value.reviewFilter === 'TO_REVIEW' || value.reviewFilter === 'MASTERED' ?
         value.reviewFilter : 'ALL';
-    const zoomPercent = Number.isFinite(value.zoomPercent) ?
-      Math.min(200, Math.max(50, Math.round(value.zoomPercent))) : DEFAULT_WORKSPACE.zoomPercent;
+    const zoomPercent = normalizeZoomPercent(value.zoomPercent, DEFAULT_WORKSPACE.zoomPercent);
     return {
       mainView: mainView,
       libraryScope: libraryScope,

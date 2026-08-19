@@ -26,11 +26,14 @@ import {
   MAX_EXCERPT_LENGTH,
   MAX_NOTE_LENGTH,
   MAX_QUOTE_LENGTH,
+  MAX_ZOOM_PERCENT,
   MAX_SEARCH_LENGTH,
   MAX_TAGS_LENGTH,
   MAX_TITLE_LENGTH,
   MAX_URL_LENGTH,
   normalizeTags,
+  normalizeZoomPercent,
+  MIN_ZOOM_PERCENT,
   ReviewStatus,
   StoredPdfRect,
   StoredSelection,
@@ -44,6 +47,7 @@ import { DiagnosticService } from '../services/DiagnosticService';
 import { ExportService } from '../services/ExportService';
 import { ImportService, ImportedPdf } from '../services/ImportService';
 import { LinkService, WebDraft } from '../services/LinkService';
+import { ReviewFilterService } from '../services/ReviewFilterService';
 import { ReviewScheduler } from '../services/ReviewScheduler';
 import { SettingsService } from '../services/SettingsService';
 import {
@@ -219,6 +223,7 @@ struct Index {
   private workspaceService: WorkspaceService = new WorkspaceService();
   private fingerprintService: FileFingerprintService = new FileFingerprintService();
   private reviewScheduler: ReviewScheduler = new ReviewScheduler();
+  private reviewFilterService: ReviewFilterService = new ReviewFilterService();
   private workspaceReady: boolean = false;
   private workspaceSaveTask: Promise<void> | undefined = undefined;
 
@@ -1240,8 +1245,8 @@ struct Index {
     this.resetEvidenceDraft();
     this.editingEvidenceId = '';
     this.mainView = 'READER';
-    this.pdfController.setMaxZoom(4);
-    this.pdfController.setMinZoom(0.5);
+    this.pdfController.setMaxZoom(MAX_ZOOM_PERCENT / 100);
+    this.pdfController.setMinZoom(MIN_ZOOM_PERCENT / 100);
     this.pdfController.setPageFit(pdfService.PageFit.FIT_WIDTH);
     this.restoreDocumentAnnotations(record.id);
     this.prepareThumbnails(record.id, record.pageCount);
@@ -1714,10 +1719,11 @@ struct Index {
         return false;
       }
       this.documentPath = document.source;
-      this.pdfController.setMaxZoom(4);
-      this.pdfController.setMinZoom(0.5);
+      this.pdfController.setMaxZoom(MAX_ZOOM_PERCENT / 100);
+      this.pdfController.setMinZoom(MIN_ZOOM_PERCENT / 100);
       if (pageFit === pdfService.PageFit.FIT_NONE) {
-        this.pdfController.setPageZoom(Math.max(0.5, Math.min(4, zoom)));
+        this.pdfController.setPageZoom(
+          normalizeZoomPercent(zoom * 100) / 100);
       } else {
         this.pdfController.setPageFit(pageFit);
       }
@@ -1775,7 +1781,7 @@ struct Index {
     if (this.documentPath.length === 0) {
       return;
     }
-    const nextZoom = Math.max(50, Math.min(400, this.zoomPercent + delta));
+    const nextZoom = normalizeZoomPercent(this.zoomPercent + delta);
     this.pdfController.setPageZoom(nextZoom / 100);
     this.zoomPercent = nextZoom;
     this.saveWorkspace();
@@ -1884,7 +1890,8 @@ struct Index {
   private reviewCount(filter: ReviewFilter): number {
     return this.evidenceCards.filter((card: EvidenceCard): boolean =>
       this.collectionMatchesEvidence(card) &&
-      (filter === 'ALL' || card.reviewStatus === filter)).length;
+      (filter === 'ALL' || card.reviewStatus === filter) &&
+      this.matchesReviewQuery(card)).length;
   }
 
   private isReviewDue(card: EvidenceCard): boolean {
@@ -1985,9 +1992,10 @@ struct Index {
       if (this.libraryScope === 'RECENT' && document.lastReadAt < recentLimit) {
         return false;
       }
-      if (this.selectedTag.length > 0 && !tagList(document.tags).includes(this.selectedTag)) {
+      if (this.selectedTag.length > 0 && !this.reviewFilterService.hasTag(document.tags, this.selectedTag)) {
         const hasEvidenceTag = this.evidenceCards.some((card: EvidenceCard): boolean =>
-          card.documentId === document.id && tagList(card.tags).includes(this.selectedTag));
+          card.documentId === document.id &&
+          this.reviewFilterService.hasTag(card.tags, this.selectedTag));
         if (!hasEvidenceTag) {
           return false;
         }
@@ -2013,27 +2021,11 @@ struct Index {
     if (!this.collectionMatchesEvidence(card)) {
       return false;
     }
-    const keyword = this.reviewSearch.trim().toLowerCase();
     const document = this.documentById(card.documentId);
-    if (this.reviewSelectedTag.length > 0) {
-      const cardHasTag = tagList(card.tags).includes(this.reviewSelectedTag);
-      const documentHasTag = document !== undefined &&
-        tagList(document.tags).includes(this.reviewSelectedTag);
-      if (!cardHasTag && !documentHasTag) {
-        return false;
-      }
-    }
-    if (keyword.length === 0) {
-      return true;
-    }
-    return card.quote.toLowerCase().includes(keyword) ||
-      card.note.toLowerCase().includes(keyword) ||
-      card.tags.toLowerCase().includes(keyword) ||
-      this.documentTitle(card.documentId).toLowerCase().includes(keyword) ||
-      (document !== undefined && (
-        document.source.toLowerCase().includes(keyword) ||
-        document.tags.toLowerCase().includes(keyword)
-      ));
+    return this.reviewFilterService.matches(card, document, {
+      keyword: this.reviewSearch,
+      selectedTag: this.reviewSelectedTag
+    });
   }
 
   private filteredReviewCards(): EvidenceCard[] {
@@ -2902,22 +2894,13 @@ struct Index {
   }
 
   private allTags(): string[] {
-    const values: string[] = [];
-    this.documents.forEach((document: DocumentRecord): void => {
-      tagList(document.tags).forEach((tag: string): void => {
-        if (!values.includes(tag)) {
-          values.push(tag);
-        }
-      });
-    });
-    this.evidenceCards.forEach((card: EvidenceCard): void => {
-      tagList(card.tags).forEach((tag: string): void => {
-        if (!values.includes(tag)) {
-          values.push(tag);
-        }
-      });
-    });
-    return values.sort();
+    return this.reviewFilterService.allTags(this.documents, this.evidenceCards);
+  }
+
+  private isSelectedTag(candidate: string, selected: string): boolean {
+    return candidate.length === 0 ?
+      selected.length === 0 :
+      selected.length > 0 && this.reviewFilterService.hasTag(candidate, selected);
   }
 
   private tagSuggestions(value: string): string[] {
@@ -3547,9 +3530,12 @@ struct Index {
       const documentIds = documents.map((document: DocumentRecord): string => document.id);
       cards = cards.filter((card: EvidenceCard): boolean =>
         documentIds.includes(card.documentId) &&
-        (tagList(card.tags).includes(this.selectedTag) ||
+        (this.reviewFilterService.hasTag(card.tags, this.selectedTag) ||
           this.documentById(card.documentId) !== undefined &&
-          tagList(this.documentById(card.documentId)!.tags).includes(this.selectedTag)));
+          this.reviewFilterService.hasTag(
+            this.documentById(card.documentId)!.tags,
+            this.selectedTag
+          )));
       title = `阅迹学习笔记 - #${this.selectedTag}`;
     }
     this.exportDocuments(documents, cards, title);
@@ -4098,9 +4084,12 @@ struct Index {
     Button(tag.length === 0 ? '全部标签' : `#${tag}`)
       .height(30)
       .fontSize(12)
-      .fontColor(this.selectedTag === tag ? '#FFFFFF' : this.secondaryText())
-      .backgroundColor(this.selectedTag === tag ? this.accentColor() : this.raisedBackground())
-      .border({ width: 1, color: this.selectedTag === tag ? this.accentColor() : this.dividerColor() })
+      .fontColor(this.isSelectedTag(tag, this.selectedTag) ? '#FFFFFF' : this.secondaryText())
+      .backgroundColor(this.isSelectedTag(tag, this.selectedTag) ? this.accentColor() : this.raisedBackground())
+      .border({
+        width: 1,
+        color: this.isSelectedTag(tag, this.selectedTag) ? this.accentColor() : this.dividerColor()
+      })
       .borderRadius(6)
       .padding({ left: 10, right: 10 })
       .onClick((): void => {
@@ -4114,11 +4103,13 @@ struct Index {
     Button(tag.length === 0 ? '全部标签' : `#${tag}`)
       .height(30)
       .fontSize(12)
-      .fontColor(this.reviewSelectedTag === tag ? '#FFFFFF' : this.secondaryText())
-      .backgroundColor(this.reviewSelectedTag === tag ? this.accentColor() : this.raisedBackground())
+      .fontColor(this.isSelectedTag(tag, this.reviewSelectedTag) ? '#FFFFFF' : this.secondaryText())
+      .backgroundColor(
+        this.isSelectedTag(tag, this.reviewSelectedTag) ? this.accentColor() : this.raisedBackground()
+      )
       .border({
         width: 1,
-        color: this.reviewSelectedTag === tag ? this.accentColor() : this.dividerColor()
+        color: this.isSelectedTag(tag, this.reviewSelectedTag) ? this.accentColor() : this.dividerColor()
       })
       .borderRadius(6)
       .padding({ left: 10, right: 10 })

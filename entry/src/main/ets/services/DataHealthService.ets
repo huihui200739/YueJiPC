@@ -8,6 +8,7 @@ import {
   isCollectionItemKind,
   validateEvidenceSource
 } from '../model/Models';
+import { isValidHttpUrl } from './UrlValidation';
 
 export type DataHealthIssueCode =
   'MISSING_PDF' |
@@ -63,7 +64,7 @@ export class DataHealthService {
 
     documents.forEach((document: DocumentRecord): void => {
       if (document.kind === 'WEB' &&
-        !/^https?:\/\//i.test(document.source.trim())) {
+        !isValidHttpUrl(document.source, false)) {
         issues.push({
           code: 'INVALID_WEB_SOURCE',
           documentId: document.id,
