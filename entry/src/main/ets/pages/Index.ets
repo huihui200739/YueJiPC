@@ -102,6 +102,18 @@ interface ThumbnailRecord {
 struct Index {
   @State private isReady: boolean = false;
   @State private isLoading: boolean = false;
+  @State private showLaunchAnimation: boolean = true;
+  @State private launchDarkMode: boolean = false;
+  @State private launchOverlayOpacity: number = 1;
+  @State private launchMarkOpacity: number = 0;
+  @State private launchMarkScale: number = 0.82;
+  @State private launchBrandOpacity: number = 0;
+  @State private launchBrandOffset: number = 12;
+  @State private launchTaglineOpacity: number = 0;
+  @State private launchTaglineOffset: number = 8;
+  @State private launchAccentWidth: number = 12;
+  @State private launchStatusOpacity: number = 0;
+  @State private launchInitializationFailed: boolean = false;
   @State private mainView: MainView = 'LIBRARY';
   @State private libraryScope: LibraryScope = 'ALL';
   @State private reviewFilter: ReviewFilter = 'ALL';
@@ -226,6 +238,13 @@ struct Index {
   private reviewFilterService: ReviewFilterService = new ReviewFilterService();
   private workspaceReady: boolean = false;
   private workspaceSaveTask: Promise<void> | undefined = undefined;
+  private launchSettings: AppSettings | undefined = undefined;
+  private launchSettingsReady: Promise<void> | undefined = undefined;
+  private launchAnimationGeneration: number = 0;
+  private launchMinimumElapsed: boolean = false;
+  private launchInitializationSettled: boolean = false;
+  private launchDismissStarted: boolean = false;
+  private launchFailureDismissScheduled: boolean = false;
 
   aboutToAppear(): void {
     this.pdfController.registerPageChangedListener((pageIndex: number): void => {
@@ -248,10 +267,13 @@ struct Index {
     this.pdfController.registerTextSelectedListener((selection: pdfViewManager.TextSelectedParam): void => {
       this.handleTextSelection(selection);
     });
-    this.initializeApp();
+    this.launchSettingsReady = this.prepareLaunchTheme();
+    const launchGeneration = this.startLaunchAnimation();
+    this.initializeApp(launchGeneration);
   }
 
   aboutToDisappear(): void {
+    this.launchAnimationGeneration++;
     this.statusGeneration++;
     this.readPositionGeneration++;
     this.flushPendingReadPosition();
@@ -260,6 +282,167 @@ struct Index {
       this.pdfController.releaseDocument();
     }
     this.releaseThumbnails();
+  }
+
+  private startLaunchAnimation(): number {
+    const generation = ++this.launchAnimationGeneration;
+    this.showLaunchAnimation = true;
+    this.launchOverlayOpacity = 1;
+    this.launchMarkOpacity = 0;
+    this.launchMarkScale = 0.82;
+    this.launchBrandOpacity = 0;
+    this.launchBrandOffset = 12;
+    this.launchTaglineOpacity = 0;
+    this.launchTaglineOffset = 8;
+    this.launchAccentWidth = 12;
+    this.launchStatusOpacity = 0;
+    this.launchInitializationFailed = false;
+    this.launchMinimumElapsed = false;
+    this.launchInitializationSettled = false;
+    this.launchDismissStarted = false;
+    this.launchFailureDismissScheduled = false;
+
+    setTimeout((): void => {
+      if (generation !== this.launchAnimationGeneration) {
+        return;
+      }
+      this.getUIContext().animateTo({
+        duration: 420,
+        curve: Curve.EaseOut
+      }, (): void => {
+        this.launchMarkOpacity = 1;
+        this.launchMarkScale = 1;
+        this.launchAccentWidth = 84;
+      });
+    }, 40);
+
+    setTimeout((): void => {
+      if (generation !== this.launchAnimationGeneration) {
+        return;
+      }
+      this.getUIContext().animateTo({
+        duration: 320,
+        curve: Curve.EaseOut
+      }, (): void => {
+        this.launchBrandOpacity = 1;
+        this.launchBrandOffset = 0;
+      });
+    }, 260);
+
+    setTimeout((): void => {
+      if (generation !== this.launchAnimationGeneration) {
+        return;
+      }
+      this.getUIContext().animateTo({
+        duration: 280,
+        curve: Curve.EaseOut
+      }, (): void => {
+        this.launchTaglineOpacity = 1;
+        this.launchTaglineOffset = 0;
+      });
+    }, 480);
+
+    setTimeout((): void => {
+      if (generation !== this.launchAnimationGeneration) {
+        return;
+      }
+      this.launchMinimumElapsed = true;
+      if (this.launchInitializationSettled) {
+        if (this.launchInitializationFailed) {
+          this.scheduleFailedLaunchDismiss(generation);
+        } else {
+          this.dismissLaunchAnimation(generation);
+        }
+        return;
+      }
+      this.revealLaunchStatus(generation);
+    }, 1120);
+
+    setTimeout((): void => {
+      if (generation !== this.launchAnimationGeneration || !this.showLaunchAnimation) {
+        return;
+      }
+      if (!this.launchInitializationSettled) {
+        this.statusMessage = '本地资料仍在恢复，请稍候';
+      }
+      this.dismissLaunchAnimation(generation);
+    }, 5000);
+
+    return generation;
+  }
+
+  private async prepareLaunchTheme(): Promise<void> {
+    const context = this.hostContext();
+    if (context === undefined) {
+      return;
+    }
+    try {
+      await this.settingsService.initialize(context);
+      const settings = await this.settingsService.load();
+      this.launchSettings = settings;
+      this.launchDarkMode = settings.darkMode;
+    } catch (error) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'Launch theme preparation skipped: %{public}s', JSON.stringify(error));
+    }
+  }
+
+  private settleLaunchInitialization(generation: number): void {
+    if (generation !== this.launchAnimationGeneration) {
+      return;
+    }
+    this.launchInitializationSettled = true;
+    if (this.launchMinimumElapsed) {
+      if (this.launchInitializationFailed) {
+        this.scheduleFailedLaunchDismiss(generation);
+      } else {
+        this.dismissLaunchAnimation(generation);
+      }
+    }
+  }
+
+  private revealLaunchStatus(generation: number): void {
+    if (generation !== this.launchAnimationGeneration || !this.showLaunchAnimation) {
+      return;
+    }
+    this.getUIContext().animateTo({
+      duration: 220,
+      curve: Curve.EaseOut
+    }, (): void => {
+      this.launchStatusOpacity = 1;
+    });
+  }
+
+  private scheduleFailedLaunchDismiss(generation: number): void {
+    if (generation !== this.launchAnimationGeneration ||
+      !this.showLaunchAnimation ||
+      this.launchFailureDismissScheduled) {
+      return;
+    }
+    this.launchFailureDismissScheduled = true;
+    this.revealLaunchStatus(generation);
+    setTimeout((): void => {
+      this.dismissLaunchAnimation(generation);
+    }, 720);
+  }
+
+  private dismissLaunchAnimation(generation: number): void {
+    if (generation !== this.launchAnimationGeneration ||
+      !this.showLaunchAnimation ||
+      this.launchDismissStarted) {
+      return;
+    }
+    this.launchDismissStarted = true;
+    this.getUIContext().animateTo({
+      duration: 280,
+      curve: Curve.EaseInOut,
+      onFinish: (): void => {
+        if (generation === this.launchAnimationGeneration) {
+          this.showLaunchAnimation = false;
+        }
+      }
+    }, (): void => {
+      this.launchOverlayOpacity = 0;
+    });
   }
 
   private hostContext(): common.UIAbilityContext | undefined {
@@ -729,19 +912,30 @@ struct Index {
     return `${pageLabel} · 已选 ${this.selectedText.trim().length} 字`;
   }
 
-  private async initializeApp(): Promise<void> {
+  private async initializeApp(launchGeneration: number): Promise<void> {
     const context = this.hostContext();
     if (context === undefined) {
+      this.launchInitializationFailed = true;
       this.statusMessage = '无法取得应用上下文，请重新打开应用';
+      this.settleLaunchInitialization(launchGeneration);
       return;
     }
     try {
       const cleanupResult = this.storageMaintenanceService.cleanup(context.filesDir);
       await this.database.initialize(context);
-      await this.settingsService.initialize(context);
+      if (this.launchSettingsReady !== undefined) {
+        await this.launchSettingsReady;
+      }
+      if (this.launchSettings === undefined) {
+        await this.settingsService.initialize(context);
+      }
       await this.workspaceService.initialize(context);
-      const settings = await this.settingsService.load();
+      const settings = this.launchSettings !== undefined ?
+        this.launchSettings : await this.settingsService.load();
+      this.launchSettings = undefined;
+      this.launchSettingsReady = undefined;
       this.darkMode = settings.darkMode;
+      this.launchDarkMode = settings.darkMode;
       this.focusMode = settings.focusMode;
       this.leftSidebarOpen = settings.leftSidebarOpen;
       this.rightSidebarOpen = settings.rightSidebarOpen;
@@ -759,7 +953,10 @@ struct Index {
       this.showTransientStatus(this.appendStorageCleanupStatus(readyMessage, cleanupResult));
     } catch (error) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'Application initialization failed: %{public}s', JSON.stringify(error));
+      this.launchInitializationFailed = true;
       this.statusMessage = '本地资料库初始化失败，请检查存储空间后重试';
+    } finally {
+      this.settleLaunchInitialization(launchGeneration);
     }
   }
 
@@ -3742,6 +3939,30 @@ struct Index {
     return this.darkMode ? '#88000000' : '#66000000';
   }
 
+  private launchBackground(): string {
+    return this.launchDarkMode ? '#171C1A' : '#F4F6F5';
+  }
+
+  private launchPrimary(): string {
+    return this.launchDarkMode ? '#54B9AD' : '#147D73';
+  }
+
+  private launchAccent(): string {
+    return this.launchDarkMode ? '#FF8D7D' : '#D95F4E';
+  }
+
+  private launchPrimaryText(): string {
+    return this.launchDarkMode ? '#EDF2F0' : '#202724';
+  }
+
+  private launchSecondaryText(): string {
+    return this.launchDarkMode ? '#AFBAB6' : '#6D7773';
+  }
+
+  private launchMutedText(): string {
+    return this.launchDarkMode ? '#82908B' : '#89928F';
+  }
+
   private compactEditorWidth(preferredWidth: number): number {
     return Math.min(preferredWidth, Math.max(320, this.windowWidth - 32));
   }
@@ -3828,6 +4049,9 @@ struct Index {
   }
 
   private handleShortcut(event: KeyEvent): boolean {
+    if (this.showLaunchAnimation) {
+      return true;
+    }
     if (event.type !== KeyType.Down) {
       return false;
     }
@@ -6714,6 +6938,64 @@ struct Index {
     .border({ width: 2, color: this.accentColor(), style: BorderStyle.Dashed });
   }
 
+  @Builder
+  private LaunchOverlay(): void {
+    Stack({ alignContent: Alignment.Center }) {
+      Column({ space: 0 }) {
+        Image($r('app.media.startIcon'))
+          .width(112)
+          .height(112)
+          .objectFit(ImageFit.Contain)
+          .opacity(this.launchMarkOpacity)
+          .scale({ x: this.launchMarkScale, y: this.launchMarkScale });
+        Row({ space: 5 }) {
+          Column()
+            .width(this.launchAccentWidth)
+            .height(3)
+            .borderRadius(2)
+            .backgroundColor(this.launchPrimary());
+          Column()
+            .width(7)
+            .height(7)
+            .borderRadius(4)
+            .backgroundColor(this.launchAccent());
+        }
+        .height(18)
+        .margin({ top: 12 })
+        .justifyContent(FlexAlign.Center)
+        .opacity(this.launchMarkOpacity);
+        Text('阅迹')
+          .fontSize(30)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.launchPrimaryText())
+          .letterSpacing(0)
+          .margin({ top: 8 })
+          .opacity(this.launchBrandOpacity)
+          .translate({ y: this.launchBrandOffset });
+        Text('让每条笔记都能回到原文')
+          .fontSize(13)
+          .fontColor(this.launchSecondaryText())
+          .letterSpacing(0)
+          .margin({ top: 8 })
+          .opacity(this.launchTaglineOpacity)
+          .translate({ y: this.launchTaglineOffset });
+        Text(this.launchInitializationFailed ? '本地资料库恢复遇到问题，正在进入应用…' : '正在恢复本地阅读现场…')
+          .fontSize(12)
+          .fontColor(this.launchMutedText())
+          .letterSpacing(0)
+          .height(18)
+          .margin({ top: 14 })
+          .opacity(this.launchStatusOpacity);
+      }
+      .alignItems(HorizontalAlign.Center);
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.launchBackground())
+    .opacity(this.launchOverlayOpacity)
+    .hitTestBehavior(HitTestMode.Block);
+  }
+
   build() {
     Stack() {
       Column() {
@@ -6856,6 +7138,9 @@ struct Index {
       }
       if (this.deleteTargetKind !== 'NONE') {
         this.DeleteConfirmOverlay();
+      }
+      if (this.showLaunchAnimation) {
+        this.LaunchOverlay();
       }
     }
     .width('100%')

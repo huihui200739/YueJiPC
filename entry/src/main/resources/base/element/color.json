@@ -33,6 +33,10 @@
       "value": "#147D73"
     },
     {
+      "name": "launch_accent",
+      "value": "#D8645A"
+    },
+    {
       "name": "on_primary",
       "value": "#FFFFFF"
     },

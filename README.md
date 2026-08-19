@@ -20,6 +20,7 @@
 - JSON 结构化备份与恢复；恢复前快照和成功清理、失败回滚的 PDF 删除保护
 - 数据健康检查、证据来源类型/孤儿关系提示和不包含用户内容的脱敏诊断导出
 - 启动时清理中断写入留下的导入、修复和备份临时文件
+- 冷启动品牌动画与本地亮色/暗色设置同步，初始化期间拦截误触，完成后平滑进入工作台
 - PDF 丢失修复使用临时文件校验后原子替换，并一次性更新来源指纹和阅读元数据
 - 备份恢复区分事务回滚成功、回滚失败和数据已写入但界面重载失败等状态
 - 亮色、暗色、专注模式和窄窗口侧栏
@@ -93,10 +94,11 @@ Release 构建：
 - 已在 `MateBook Pro` 2in1 模拟器（HarmonyOS 6.1.0.125）覆盖安装并启动 Debug 包，旧资料、页码、证据卡和设置仍可恢复
 - 已验证普通、200 页、加密和损坏 PDF，以及阅读、证据卡、来源回跳、复习、Markdown 导出、重启恢复和窄窗口布局
 - 已检查 PDF 阅读工具栏的系统符号按钮和固定尺寸布局，启动后显示正常
+- 已验证冷启动品牌动画在亮色/暗色主题下与进入应用后的视觉主题一致，覆盖安装后资料、页码、证据卡和设置仍可恢复
 - 27 个 JSON/JSON5 配置均可解析；源码区未发现证书、私钥、Profile、凭据或测试 PDF
-- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，523964 bytes，SHA-256 `33b0b7986a6514f97b1efffa9275397f619152ecfc72d578eb68c65b981f211e`
-- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，231695 bytes，SHA-256 `ea193a781bcdd4af3a66e06425c9f67c2c8cf1d1b38cc3e35c93b8ca4c2395a7`
-- 产物生成时间：2026 年 8 月 19 日 17:45（以本轮构建产物文件时间为准）
+- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，1285615 bytes，SHA-256 `0019bb680b7b98bdfdb5d7650836d68b17fcabcd2e653e6b1d284d3b53026167`
+- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，1287134 bytes，SHA-256 `c9d4152156d5e49a9fe5c1dca19dacbd219eb28e779f563c62a8cc869b67d585`
+- 产物生成时间：2026 年 8 月 19 日 21:31（以本轮构建产物文件时间为准）
 - 本轮代码新增的数据库级联、输入长度、选区 JSON、网址、导出、拖放、备份恢复、数据健康、存储临时文件清理、缩放持久化和复习筛选边界，仍需按 [docs/TEST_PLAN.md](docs/TEST_PLAN.md) 完成人工回归
 - 发布签名、AppGallery Connect 配置、真机验证、3 名学生测试、30 分钟稳定性测试和商店送审仍需完成
 - 小艺输入法隐私协议未由本项目代为接受；文字输入和键盘快捷键仍需开发者本人完成最终人工回归
