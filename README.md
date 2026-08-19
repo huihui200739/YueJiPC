@@ -96,12 +96,15 @@ Release 构建：
 - 已检查 PDF 阅读工具栏的系统符号按钮和固定尺寸布局，启动后显示正常
 - 已验证冷启动品牌动画在亮色/暗色主题下与进入应用后的视觉主题一致，覆盖安装后资料、页码、证据卡和设置仍可恢复
 - 27 个 JSON/JSON5 配置均可解析；源码区未发现证书、私钥、Profile、凭据或测试 PDF
-- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，1285615 bytes，SHA-256 `0019bb680b7b98bdfdb5d7650836d68b17fcabcd2e653e6b1d284d3b53026167`
-- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，1287134 bytes，SHA-256 `c9d4152156d5e49a9fe5c1dca19dacbd219eb28e779f563c62a8cc869b67d585`
-- 产物生成时间：2026 年 8 月 19 日 21:31（以本轮构建产物文件时间为准）
+- 当前无签名 HAP：`entry/build/default/outputs/default/entry-default-unsigned.hap`，539263 bytes，SHA-256 `4a00fdd31da01993d563b2b42c80306fd7733702421a7231a4d7d804a3af2639`
+- 当前无签名 APP：`build/outputs/default/YueJiPC-default-unsigned.app`，237440 bytes，SHA-256 `7342262c4d7cbcb2a8da97e9434f752e3af0b6bb15ecc945526b9552d341af53`
+- 产物生成时间：2026 年 8 月 19 日 23:17:50（以本轮构建产物文件时间为准）
+- 本轮已重新执行 `hvigorw test`，35 个测试通过，失败 0，错误 0；Release 构建也已重新执行并成功
 - 本轮代码新增的数据库级联、输入长度、选区 JSON、网址、导出、拖放、备份恢复、数据健康、存储临时文件清理、缩放持久化和复习筛选边界，仍需按 [docs/TEST_PLAN.md](docs/TEST_PLAN.md) 完成人工回归
 - 发布签名、AppGallery Connect 配置、真机验证、3 名学生测试、30 分钟稳定性测试和商店送审仍需完成
 - 小艺输入法隐私协议未由本项目代为接受；文字输入和键盘快捷键仍需开发者本人完成最终人工回归
+
+发布交接步骤见 [docs/RELEASE_HANDOFF.md](docs/RELEASE_HANDOFF.md)。
 
 发布进度使用 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) 跟踪，不把未执行的人工测试标记为通过。
 

@@ -40,14 +40,20 @@
 当前无签名产物：
 
 - HAP 路径：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- HAP 大小：1285615 bytes
-- HAP SHA-256：`0019bb680b7b98bdfdb5d7650836d68b17fcabcd2e653e6b1d284d3b53026167`
+- HAP 大小：539263 bytes
+- HAP SHA-256：`4a00fdd31da01993d563b2b42c80306fd7733702421a7231a4d7d804a3af2639`
 - APP 路径：`build/outputs/default/YueJiPC-default-unsigned.app`
-- APP 大小：1287134 bytes
-- APP SHA-256：`c9d4152156d5e49a9fe5c1dca19dacbd219eb28e779f563c62a8cc869b67d585`
-- 构建时间：2026 年 8 月 19 日 21:31（以本轮构建产物文件时间为准）
+- APP 大小：237440 bytes
+- APP SHA-256：`7342262c4d7cbcb2a8da97e9434f752e3af0b6bb15ecc945526b9552d341af53`
+- 构建时间：2026 年 8 月 19 日 23:17:50（Asia/Shanghai，以本轮构建产物文件时间为准）
 
 完成发布签名后，必须重新记录已签名产物的文件名、大小和 SHA-256；当前哈希不能作为送审包哈希。
+
+本轮本地发布复核：
+
+- `hvigorw test -p product=default -p buildMode=debug --no-daemon`：35 个测试通过，失败 0，错误 0；测试结果时间为 2026 年 8 月 19 日 23:17:24。
+- `hvigorw assembleApp -p product=default -p buildMode=release --no-daemon`：构建成功；产物时间为 2026 年 8 月 19 日 23:17:50。
+- 构建仍提示未配置 `signingConfigs`，因此 HAP/App 未签名；ArkTS 的数据库异常处理警告仍存在，但不阻断本次构建。
 
 ## 运行验证
 
