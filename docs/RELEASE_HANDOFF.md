@@ -55,6 +55,14 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 构建日志中不能再出现 `No signingConfigs profile is configured` 或 `skip sign`。生成后记录**已签名** HAP/App 的实际路径、大小和 SHA-256；此前清单中的未签名哈希不能替代签名包哈希。
 
+构建前后可运行仓库内的只读审计脚本：
+
+```bash
+./tools/release-audit.sh
+```
+
+脚本会检查 `com.huihui.yueji`、`1.0.0`、`versionCode 1000000`、`2in1`、Release 元数据和构建产物哈希；签名配置仍需在 DevEco Studio 中完成。
+
 ## 4. 安装与升级验证
 
 使用 DevEco Studio 的运行/安装能力或开发者自己的 HarmonyOS PC 真机完成以下顺序：
