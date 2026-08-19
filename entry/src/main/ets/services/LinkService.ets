@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { createId, DocumentRecord, normalizeTags } from '../model/Models';
+import { isValidHttpUrl, normalizeHttpUrl } from './UrlValidation';
 
 export interface WebDraft {
   title: string;
@@ -11,16 +12,11 @@ export interface WebDraft {
 
 export class LinkService {
   normalizeUrl(value: string): string {
-    const trimmed = value.trim();
-    if (trimmed.startsWith('https://') || trimmed.startsWith('http://')) {
-      return trimmed;
-    }
-    return `https://${trimmed}`;
+    return normalizeHttpUrl(value);
   }
 
   isValidUrl(value: string): boolean {
-    const normalized = this.normalizeUrl(value);
-    return /^https?:\/\/[^\s.]+\.[^\s]+$/i.test(normalized);
+    return isValidHttpUrl(value);
   }
 
   createDocument(draft: WebDraft): DocumentRecord {
@@ -36,6 +32,7 @@ export class LinkService {
       favorite: false,
       excerpt: draft.excerpt.trim(),
       note: draft.note.trim(),
+      contentHash: '',
       createdAt: now,
       lastReadAt: now
     };
