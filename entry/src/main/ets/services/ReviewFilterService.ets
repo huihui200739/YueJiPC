@@ -1,6 +1,7 @@
 import {
   DocumentRecord,
   EvidenceCard,
+  MAX_SEARCH_LENGTH,
   tagList
 } from '../model/Models';
 
@@ -18,7 +19,7 @@ export class ReviewFilterService {
       return false;
     }
 
-    const keyword = this.normalized(query.keyword);
+    const keyword = this.normalizeKeyword(query.keyword);
     if (keyword.length === 0) {
       return true;
     }
@@ -31,7 +32,37 @@ export class ReviewFilterService {
       document.note
     ];
     return cardTexts.concat(documentTexts).some((text: string): boolean =>
-      text.toLowerCase().includes(keyword));
+      this.containsKeyword(text, keyword));
+  }
+
+  matchesDocument(
+    document: DocumentRecord,
+    evidenceCards: EvidenceCard[],
+    keyword: string
+  ): boolean {
+    const normalizedKeyword = this.normalizeKeyword(keyword);
+    if (normalizedKeyword.length === 0) {
+      return true;
+    }
+    const documentTexts: string[] = [
+      document.title,
+      document.source,
+      document.tags,
+      document.excerpt,
+      document.note
+    ];
+    if (documentTexts.some((text: string): boolean =>
+      this.containsKeyword(text, normalizedKeyword))) {
+      return true;
+    }
+    return evidenceCards.some((card: EvidenceCard): boolean =>
+      card.documentId === document.id &&
+      [card.quote, card.note, card.tags].some((text: string): boolean =>
+        this.containsKeyword(text, normalizedKeyword)));
+  }
+
+  normalizeKeyword(value: string): string {
+    return this.normalized(value).slice(0, MAX_SEARCH_LENGTH);
   }
 
   hasTag(tags: string, selectedTag: string): boolean {
@@ -69,5 +100,9 @@ export class ReviewFilterService {
 
   private normalized(value: string): string {
     return value.trim().toLowerCase();
+  }
+
+  private containsKeyword(value: string, keyword: string): boolean {
+    return this.normalized(value).includes(keyword);
   }
 }

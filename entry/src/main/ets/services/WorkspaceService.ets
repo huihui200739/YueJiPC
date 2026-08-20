@@ -2,6 +2,7 @@ import preferences from '@ohos.data.preferences';
 import {
   LibraryScope,
   MainView,
+  MAX_SEARCH_LENGTH,
   normalizeZoomPercent,
   ReviewFilter,
   WorkspaceState
@@ -70,17 +71,21 @@ export class WorkspaceService {
       activeDocumentId: this.safeString(value.activeDocumentId),
       selectedCollectionId: this.safeString(value.selectedCollectionId),
       zoomPercent: zoomPercent,
-      librarySearch: this.safeString(value.librarySearch),
+      librarySearch: this.safeSearch(value.librarySearch),
       selectedTag: this.safeString(value.selectedTag),
-      reviewSearch: this.safeString(value.reviewSearch),
+      reviewSearch: this.safeSearch(value.reviewSearch),
       reviewSelectedTag: this.safeString(value.reviewSelectedTag),
-      searchText: this.safeString(value.searchText),
+      searchText: this.safeSearch(value.searchText),
       savedAt: Number.isFinite(value.savedAt) ? value.savedAt : 0
     };
   }
 
   private safeString(value: Object): string {
     return typeof value === 'string' ? value.slice(0, 200) : '';
+  }
+
+  private safeSearch(value: Object): string {
+    return typeof value === 'string' ? value.slice(0, MAX_SEARCH_LENGTH) : '';
   }
 
   private copy(value: WorkspaceState): WorkspaceState {

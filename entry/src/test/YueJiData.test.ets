@@ -10,6 +10,7 @@ import {
   EvidenceCard,
   EvidenceKind,
   isValidStoredSelectionJson,
+  MAX_SEARCH_LENGTH,
   MAX_ZOOM_PERCENT,
   MIN_ZOOM_PERCENT,
   normalizeTags,
@@ -303,6 +304,24 @@ export default function yueJiDataTest(): void {
         keyword: '',
         selectedTag: '实验'
       })).assertFalse();
+    });
+
+    it('shares bounded, case-insensitive document search with the library view', 0, (): void => {
+      const service = new ReviewFilterService();
+      const document = createDocument();
+      document.title = '操作系统课程论文';
+      const card = createEvidence();
+      card.quote = '可追溯的正文摘录';
+
+      expect(service.matchesDocument(document, [card], '  正文摘录  ')).assertTrue();
+      expect(service.matchesDocument(document, [card], '  课程论文  ')).assertTrue();
+      expect(service.normalizeKeyword(`  ${'a'.repeat(MAX_SEARCH_LENGTH + 20)}  `).length)
+        .assertEqual(MAX_SEARCH_LENGTH);
+      expect(service.matchesDocument(
+        document,
+        [card],
+        `  ${'a'.repeat(MAX_SEARCH_LENGTH + 20)}  `
+      )).assertFalse();
     });
 
     it('deduplicates tag suggestions across document and evidence card data', 0, (): void => {

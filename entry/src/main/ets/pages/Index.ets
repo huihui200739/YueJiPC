@@ -2197,20 +2197,11 @@ struct Index {
           return false;
         }
       }
-      if (keyword.length === 0) {
-        return true;
-      }
-      const documentEvidence = this.evidenceCards.filter((card: EvidenceCard): boolean =>
-        card.documentId === document.id);
-      return document.title.toLowerCase().includes(keyword) ||
-        document.tags.toLowerCase().includes(keyword) ||
-        document.source.toLowerCase().includes(keyword) ||
-        document.excerpt.toLowerCase().includes(keyword) ||
-        document.note.toLowerCase().includes(keyword) ||
-        documentEvidence.some((card: EvidenceCard): boolean =>
-          card.quote.toLowerCase().includes(keyword) ||
-          card.note.toLowerCase().includes(keyword) ||
-          card.tags.toLowerCase().includes(keyword));
+      return this.reviewFilterService.matchesDocument(
+        document,
+        this.evidenceCards,
+        keyword
+      );
     });
   }
 
