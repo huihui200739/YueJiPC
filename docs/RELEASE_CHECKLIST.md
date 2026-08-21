@@ -56,6 +56,13 @@
 - 构建仍提示未配置 `signingConfigs`，因此 HAP/App 未签名；ArkTS 的数据库异常处理警告仍存在，但不阻断本次构建。
 - 可使用 [`tools/release-audit.sh`](../tools/release-audit.sh) 检查版本、Release 元数据、产物路径和哈希；该脚本不会读取或输出签名凭据。
 
+### 2026 年 8 月 21 日发布审计
+
+- `build-profile.json5` 的 `signingConfigs` 仍为空数组，因此当前产物仍不是市场送审包。
+- 本机 `/Users/huihui/.ohos/config` 中只有一套 2026 年 8 月 20 日生成的 YueJiPC 签名材料；其 Profile 元数据为 `type: debug`、`bundle-name: com.huihui.yueji`，只能用于真机调试，不能用于 AppGallery Connect 发布。
+- DevEco Studio 的“项目结构”签名对话框在自动化检查中只暴露空滚动区，无法安全读取或确认表单内容；需要在 IDE 界面人工完成发布证书/Profile 配置。
+- AppGallery Connect 入口可访问，但当前 Chrome 会话跳转到华为账号登录页；登录、创建应用、申请发布证书和上传包必须由有权限的账号持有人确认后进行。
+
 ## 运行验证
 
 - [x] 启动 `MateBook Pro` 2in1 模拟器（HarmonyOS 6.1.0.125）
