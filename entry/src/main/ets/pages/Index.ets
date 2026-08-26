@@ -5,6 +5,7 @@ import { unifiedDataChannel, uniformDataStruct } from '@kit.ArkData';
 import { KeyCode } from '@kit.InputKit';
 import { PdfView, pdfService, pdfViewManager } from '@kit.PDFKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import type { Callback } from '@ohos.base';
 import { CollectionRepository } from '../data/CollectionRepository';
 import { EvidenceRepository } from '../data/EvidenceRepository';
 import { LibraryRepository } from '../data/LibraryRepository';
@@ -174,6 +175,8 @@ struct Index {
   @State private isDeleting: boolean = false;
   @State private isSavingEvidence: boolean = false;
   @State private isSavingEditor: boolean = false;
+  @State private webEditorError: string = '';
+  @State private pdfEditorError: string = '';
   @State private editorDraftKind: EditorDraftKind = 'NONE';
   @State private editorDraftAction: EditorDraftAction = 'NONE';
   @State private editorDraftTargetId: string = '';
@@ -489,11 +492,16 @@ struct Index {
     }, 4200);
   }
 
-  private validateLength(value: string, label: string, maximum: number): boolean {
+  private validateLength(value: string, label: string, maximum: number,
+    onError?: Callback<string>): boolean {
     if (value.length <= maximum) {
       return true;
     }
-    this.statusMessage = `${label}最多支持 ${maximum} 个字符，请精简后再保存`;
+    const message = `${label}最多支持 ${maximum} 个字符，请精简后再保存`;
+    this.statusMessage = message;
+    if (onError !== undefined) {
+      onError(message);
+    }
     return false;
   }
 
@@ -751,11 +759,13 @@ struct Index {
       this.webExcerpt = '';
       this.webNote = '';
       this.webTags = '';
+      this.webEditorError = '';
     } else if (kind === 'PDF') {
       this.showPdfEditor = false;
       this.editingPdfId = '';
       this.pdfTitle = '';
       this.pdfTags = '';
+      this.pdfEditorError = '';
     } else if (kind === 'EVIDENCE') {
       this.editingEvidenceId = '';
       this.editingEvidenceNote = '';
@@ -3405,19 +3415,28 @@ struct Index {
       return;
     }
     const title = this.pdfTitle.trim();
+    this.pdfEditorError = '';
     if (title.length === 0) {
-      this.statusMessage = '资料标题不能为空';
+      this.pdfEditorError = '资料标题不能为空';
+      this.statusMessage = this.pdfEditorError;
       return;
     }
-    if (!this.validateLength(title, '资料标题', MAX_TITLE_LENGTH) ||
-      !this.validateLength(this.pdfTags, '标签', MAX_TAGS_LENGTH)) {
+    if (!this.validateLength(title, '资料标题', MAX_TITLE_LENGTH,
+      (message: string): void => {
+        this.pdfEditorError = message;
+      }) ||
+      !this.validateLength(this.pdfTags, '标签', MAX_TAGS_LENGTH,
+      (message: string): void => {
+        this.pdfEditorError = message;
+      })) {
       return;
     }
     const tags = normalizeTags(this.pdfTags);
     const editingPdfId = this.editingPdfId;
     const existingDocument = this.documentById(editingPdfId);
     if (existingDocument === undefined) {
-      this.statusMessage = '当前 PDF 资料已不存在，无法保存修改';
+      this.pdfEditorError = '当前 PDF 资料已不存在，无法保存修改';
+      this.statusMessage = this.pdfEditorError;
       return;
     }
     const updatedDocument: DocumentRecord = {
@@ -3457,7 +3476,8 @@ struct Index {
         this.statusMessage = 'PDF 资料信息已更新，资料列表将在下次打开时重新校验';
       }
     } catch (error) {
-      this.statusMessage = 'PDF 资料信息保存失败';
+      this.pdfEditorError = 'PDF 资料信息保存失败，请重试';
+      this.statusMessage = this.pdfEditorError;
     } finally {
       this.isSavingEditor = false;
     }
@@ -3467,15 +3487,32 @@ struct Index {
     if (this.isSavingEditor) {
       return;
     }
+    this.webEditorError = '';
     if (!this.linkService.isValidUrl(this.webUrl)) {
-      this.statusMessage = '网址无效，请输入完整域名，例如 https://example.com';
+      this.webEditorError = '网址无效，请输入完整域名，例如 https://example.com';
+      this.statusMessage = this.webEditorError;
       return;
     }
-    if (!this.validateLength(this.webTitle.trim(), '网页标题', MAX_TITLE_LENGTH) ||
-      !this.validateLength(this.webUrl.trim(), '网址', MAX_URL_LENGTH) ||
-      !this.validateLength(this.webExcerpt.trim(), '网页摘录', MAX_EXCERPT_LENGTH) ||
-      !this.validateLength(this.webNote.trim(), '个人笔记', MAX_NOTE_LENGTH) ||
-      !this.validateLength(this.webTags, '标签', MAX_TAGS_LENGTH)) {
+    if (!this.validateLength(this.webTitle.trim(), '网页标题', MAX_TITLE_LENGTH,
+      (message: string): void => {
+        this.webEditorError = message;
+      }) ||
+      !this.validateLength(this.webUrl.trim(), '网址', MAX_URL_LENGTH,
+      (message: string): void => {
+        this.webEditorError = message;
+      }) ||
+      !this.validateLength(this.webExcerpt.trim(), '网页摘录', MAX_EXCERPT_LENGTH,
+      (message: string): void => {
+        this.webEditorError = message;
+      }) ||
+      !this.validateLength(this.webNote.trim(), '个人笔记', MAX_NOTE_LENGTH,
+      (message: string): void => {
+        this.webEditorError = message;
+      }) ||
+      !this.validateLength(this.webTags, '标签', MAX_TAGS_LENGTH,
+      (message: string): void => {
+        this.webEditorError = message;
+      })) {
       return;
     }
     const draft: WebDraft = {
@@ -3584,7 +3621,8 @@ struct Index {
           `${isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新'}，资料列表将在下次打开时重新校验`;
       }
     } catch (error) {
-      this.statusMessage = '网页资料卡保存失败';
+      this.webEditorError = '网页资料卡保存失败，请检查网络后重试';
+      this.statusMessage = this.webEditorError;
     } finally {
       this.isSavingEditor = false;
     }
@@ -6562,6 +6600,14 @@ struct Index {
         .width('100%')
         .layoutWeight(1)
         .scrollBar(BarState.Auto);
+        if (this.webEditorError.length > 0) {
+          Text(this.webEditorError)
+            .fontSize(12)
+            .fontColor(Color.Red)
+            .lineHeight(18)
+            .textAlign(TextAlign.Start)
+            .width('100%');
+        }
         Row({ space: 9 }) {
           if (this.editingWebId.length > 0) {
             this.ToolButton((): string => '打开来源', (): void => {
@@ -6709,6 +6755,14 @@ struct Index {
             this.pdfTags = value;
           }
         );
+        if (this.pdfEditorError.length > 0) {
+          Text(this.pdfEditorError)
+            .fontSize(12)
+            .fontColor(Color.Red)
+            .lineHeight(18)
+            .textAlign(TextAlign.Start)
+            .width('100%');
+        }
         Row({ space: 9 }) {
           Blank();
           this.ToolButton((): string => '取消', (): void => {
