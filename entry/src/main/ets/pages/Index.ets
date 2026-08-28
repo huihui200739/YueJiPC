@@ -3621,7 +3621,7 @@ struct Index {
           `${isNewDocument ? '网页资料卡已保存' : '网页资料卡已更新'}，资料列表将在下次打开时重新校验`;
       }
     } catch (error) {
-      this.webEditorError = '网页资料卡保存失败，请检查网络后重试';
+      this.webEditorError = '网页资料卡保存失败，请检查本地存储空间后重试';
       this.statusMessage = this.webEditorError;
     } finally {
       this.isSavingEditor = false;
